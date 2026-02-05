@@ -4,6 +4,8 @@ Offline-first web app for scoring rugby matches: team setup, live scoring, cards
 
 **Database strategy:** See [docs/DATABASE_STRATEGY.md](docs/DATABASE_STRATEGY.md) for schema (teams, players, matches + log), offline behaviour, and implementation phases (players/rosters + stats, match history, new match flow).
 
+**Admin:** A hidden admin screen is available at `/admin` (e.g. `http://localhost:5173/admin`). It is protected by a password. Set the environment variable `VITE_ADMIN_PASSWORD` to your chosen password (e.g. in a `.env` file); if unset, the default password is `admin` (for testing). From the admin screen you can clear all data or add demo data (Reeds team with sample players).
+
 ---
 
 # React + TypeScript + Vite

@@ -17,14 +17,17 @@ import {
   SimpleGrid,
   Table,
   ScrollArea,
+  Modal,
+  MultiSelect,
+  TextInput,
 } from '@mantine/core';
 import { IconArrowLeft, IconHome, IconCalendar, IconUsers, IconList } from '@tabler/icons-react';
-import { seedDefaultTeamsIfNeeded, getTeams, addTeam, updateTeam, getTeamColors } from './db/teams';
+import { getTeams, addTeam, updateTeam, getTeamColors } from './db/teams';
 import { getPlayersByTeam, addPlayer as dbAddPlayer, updatePlayer as dbUpdatePlayer, deletePlayer as dbDeletePlayer } from './db/players';
 import { saveFinishedMatch, stateToMatchSnapshot, listMatches, getMatch, saveScheduledMatch, updateMatch } from './db/matches';
 import { getRostersByTeam, getRosterEntries, createRoster, updateRosterEntry, deleteRoster } from './db/rosters';
 import { getPlayer } from './db/players';
-import { seedSampleData } from './db/seed';
+import { clearAllData, seedReedsDemoData, seedEnglandDemoData } from './db/seed';
 import type { Player as DbPlayer, Match as DbMatch, LogEvent, Team as DbTeam } from './db/types';
 
 // Types
@@ -811,8 +814,8 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
   const [awayRosterOptions, setAwayRosterOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedAwayRosterId, setSelectedAwayRosterId] = useState<string | null>(null);
   const [setupTeams, setSetupTeams] = useState<DbTeam[]>([]);
-  const [homeTeamId, setHomeTeamId] = useState<string>('home');
-  const [awayTeamId, setAwayTeamId] = useState<string>('away');
+  const [homeTeamId, setHomeTeamId] = useState<string>('');
+  const [awayTeamId, setAwayTeamId] = useState<string>('');
   const [showAddTeamModal, setShowAddTeamModal] = useState(false);
   const [addTeamFor, setAddTeamFor] = useState<'home' | 'away' | null>(null);
   const [newTeamForm, setNewTeamForm] = useState({ name: '', color: '#3b82f6' });
@@ -967,10 +970,15 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
   };
 
   const handleStartMatch = () => {
-    if (validate()) {
-      if (isDirty || confirm('Start match with these settings?')) {
-        startMatch();
-      }
+    if (!validate()) return;
+    if (isDirty || confirm('Start match with these settings?')) {
+      updateConfig({
+        homeTeam: selectedHomeTeam?.name ?? 'Home',
+        awayTeam: selectedAwayTeam?.name ?? 'Away',
+        homeColor: config.homeColor,
+        awayColor: config.awayColor,
+      });
+      startMatch();
     }
   };
 
@@ -1201,6 +1209,7 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
             }}
             className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-blue-500 focus:outline-none"
           >
+            <option value="">Select team…</option>
             {setupTeams.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
             ))}
@@ -1242,6 +1251,7 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
             }}
             className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-red-500 focus:outline-none"
           >
+            <option value="">Select team…</option>
             {setupTeams.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
             ))}
@@ -1474,9 +1484,13 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
   );
 };
 
-// Shirt colours editor for a team (Manage Teams)
+// Unique positions for multi-select (flexible positions for match selection)
+const PLAYER_POSITION_OPTIONS = [...new Set(DEFAULT_PLAYER_POSITIONS)];
+
+// Shirt colours editor for a team (Manage Teams) – overlay with ShirtIcon like game setup
 const ShirtColoursEditor: React.FC<{ teamId: string; team: DbTeam; onUpdate: () => void }> = ({ teamId, team, onUpdate }) => {
   const colors = getTeamColors(team);
+  const [opened, setOpened] = useState(false);
   const addColor = async (hex: string) => {
     const next = colors.includes(hex) ? colors : [...colors, hex];
     await updateTeam(teamId, { colors: next, color: next[0] });
@@ -1488,21 +1502,46 @@ const ShirtColoursEditor: React.FC<{ teamId: string; team: DbTeam; onUpdate: () 
     await updateTeam(teamId, { colors: next, color: next[0] });
     onUpdate();
   };
+  const toggleColor = (hex: string) => {
+    if (colors.includes(hex)) removeColor(hex);
+    else addColor(hex);
+  };
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      {colors.map((c) => (
-        <div key={c} className="flex items-center gap-1">
-          <div className="w-10 h-10 rounded-lg border-2 border-zinc-600" style={{ backgroundColor: c }} title={c} />
-          <button type="button" onClick={() => removeColor(c)} disabled={colors.length <= 1} className="text-red-400 font-bold text-sm disabled:opacity-40">×</button>
-        </div>
-      ))}
-      <div className="flex flex-wrap gap-1">
-        {TEAM_COLORS.filter((c) => !colors.includes(c.value)).map((c) => (
-          <button key={c.value} type="button" onClick={() => addColor(c.value)} className="w-8 h-8 rounded-lg border border-zinc-600 hover:ring-2 hover:ring-white" style={{ backgroundColor: c.value }} title={c.name} />
-        ))}
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        {colors.length > 0 ? (
+          colors.map((c) => (
+            <div key={c} className="flex-shrink-0" title={c}>
+              <ShirtIcon fill={c} selected />
+            </div>
+          ))
+        ) : (
+          <span className="text-zinc-500 text-sm">No colours set</span>
+        )}
+        <Button variant="default" size="sm" onClick={() => setOpened(true)}>
+          Edit shirt colours
+        </Button>
       </div>
-      {colors.length === 0 && <span className="text-zinc-500 text-sm">Add at least one colour</span>}
-    </div>
+      <Modal opened={opened} onClose={() => setOpened(false)} title="Shirt colours" size="sm" centered>
+        <Text size="sm" c="dimmed" mb="md">Tap to add or remove. At least one colour required.</Text>
+        <div className="grid grid-cols-4 gap-3">
+          {TEAM_COLORS.map((color) => (
+            <button
+              key={color.value}
+              type="button"
+              onClick={() => toggleColor(color.value)}
+              className="flex items-center justify-center rounded-xl transition-all min-h-[64px]"
+              style={{ border: colors.includes(color.value) ? '3px solid white' : '2px solid var(--mantine-color-dark-4)' }}
+            >
+              <ShirtIcon fill={color.value} selected={colors.includes(color.value)} />
+            </button>
+          ))}
+        </div>
+        <Group justify="flex-end" mt="md">
+          <Button variant="default" onClick={() => setOpened(false)}>Done</Button>
+        </Group>
+      </Modal>
+    </>
   );
 };
 
@@ -1514,7 +1553,7 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', number: '', position: DEFAULT_PLAYER_POSITIONS[0], isStarter: true, active: true });
+  const [form, setForm] = useState({ name: '', number: '', position: '', isStarter: true, active: true });
   const [selectedRosterId, setSelectedRosterId] = useState<string | null>(null);
   const [rosterEntries, setRosterEntries] = useState<Array<{ id: string; number: number; position: string; playerId?: string }>>([]);
   const [showAddTeamForm, setShowAddTeamForm] = useState(false);
@@ -1537,11 +1576,7 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
   };
 
   useEffect(() => {
-    loadTeams().then((list) => {
-      if (list.length > 0) {
-        setSelectedTeamId((current) => (current && list.some((t) => t.id === current)) ? current : list[0].id);
-      }
-    });
+    loadTeams();
   }, []);
   useEffect(() => { loadPlayers(); }, [selectedTeamId]);
   useEffect(() => { loadRosters(); }, [selectedTeamId]);
@@ -1561,7 +1596,7 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
     } else {
       await dbAddPlayer({ teamId: selectedTeamId, name: form.name.trim(), number: num, position: form.position, isStarter: form.isStarter });
     }
-    setForm({ name: '', number: '', position: DEFAULT_PLAYER_POSITIONS[0], isStarter: true, active: true });
+    setForm({ name: '', number: '', position: '', isStarter: true, active: true });
     setEditingId(null);
     setShowForm(false);
     loadPlayers();
@@ -1671,6 +1706,50 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
           <ShirtColoursEditor teamId={selectedTeam.id} team={selectedTeam} onUpdate={loadTeams} />
         </Card>
         <Card shadow="sm" padding="lg" radius="md" withBorder>
+          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Players — {selectedTeam.name}</Text>
+          <ScrollArea>
+          <Table withTableBorder withColumnBorders style={{ minWidth: 320 }}>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>No.</Table.Th>
+                <Table.Th>Name</Table.Th>
+                <Table.Th>Position</Table.Th>
+                <Table.Th ta="center" title="Active">✓</Table.Th>
+                <Table.Th ta="center">Yellow</Table.Th>
+                <Table.Th ta="center">Red</Table.Th>
+                <Table.Th>Games</Table.Th>
+                <Table.Th>Tries</Table.Th>
+                <Table.Th>Pts</Table.Th>
+                <Table.Th>Actions</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {players.map((p) => (
+                <Table.Tr key={p.id}>
+                  <Table.Td fw={700}>{p.number}</Table.Td>
+                  <Table.Td fw={700}>{p.name}</Table.Td>
+                  <Table.Td c="dimmed"><Text size="sm">{p.position}</Text></Table.Td>
+                  <Table.Td ta="center">{(p as DbPlayer & { active?: boolean }).active !== false ? '✓' : '—'}</Table.Td>
+                  <Table.Td ta="center" c="dimmed">{p.yellowCards > 0 ? p.yellowCards : '—'}</Table.Td>
+                  <Table.Td ta="center" c="dimmed">{p.redCards > 0 ? p.redCards : '—'}</Table.Td>
+                  <Table.Td ta="center" c="dimmed">{p.gamesPlayed}</Table.Td>
+                  <Table.Td ta="center" c="dimmed">{p.tries}</Table.Td>
+                  <Table.Td ta="center" c="dimmed">{p.points}</Table.Td>
+                  <Table.Td>
+                    <Group gap="xs">
+                      <Button variant="subtle" size="xs" color="blue" onClick={() => { setForm({ name: p.name, number: String(p.number), position: p.position, isStarter: p.isStarter, active: (p as DbPlayer & { active?: boolean }).active !== false }); setEditingId(p.id); setShowForm(true); }}>Edit</Button>
+                      <Button variant="subtle" size="xs" color="red" onClick={() => handleDelete(p.id)}>Del</Button>
+                    </Group>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+          </ScrollArea>
+          <Button color="violet" fullWidth mt="md" onClick={() => { setForm({ name: '', number: '', position: '', isStarter: true, active: true }); setEditingId(null); setShowForm(true); }}>+ Add player</Button>
+        </Card>
+
+        <Card shadow="sm" padding="lg" radius="md" withBorder>
           <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Rosters — {selectedTeam.name}</Text>
           <div className="space-y-2 mb-2">
             {rosters.map((r) => (
@@ -1709,55 +1788,18 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
           )}
         </Card>
 
-        <Card shadow="sm" padding="lg" radius="md" withBorder>
-          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Players — {selectedTeam.name}</Text>
-          <ScrollArea>
-          <Table withTableBorder withColumnBorders style={{ minWidth: 320 }}>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>No.</Table.Th>
-                <Table.Th>Name</Table.Th>
-                <Table.Th>Position</Table.Th>
-                <Table.Th ta="center" title="Active">✓</Table.Th>
-                <Table.Th>Games</Table.Th>
-                <Table.Th>Tries</Table.Th>
-                <Table.Th>Pts</Table.Th>
-                <Table.Th>Actions</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {players.map((p) => (
-                <Table.Tr key={p.id}>
-                  <Table.Td fw={700}>{p.number}</Table.Td>
-                  <Table.Td fw={700}>{p.name}</Table.Td>
-                  <Table.Td c="dimmed"><Text size="sm">{p.position}</Text></Table.Td>
-                  <Table.Td ta="center">{(p as DbPlayer & { active?: boolean }).active !== false ? '✓' : '—'}</Table.Td>
-                  <Table.Td ta="center" c="dimmed">{p.gamesPlayed}</Table.Td>
-                  <Table.Td ta="center" c="dimmed">{p.tries}</Table.Td>
-                  <Table.Td ta="center" c="dimmed">{p.points}{p.yellowCards > 0 && ' 🟨'}{p.redCards > 0 && ' 🟥'}</Table.Td>
-                  <Table.Td>
-                    <Group gap="xs">
-                      <Button variant="subtle" size="xs" color="blue" onClick={() => { setForm({ name: p.name, number: String(p.number), position: p.position, isStarter: p.isStarter, active: (p as DbPlayer & { active?: boolean }).active !== false }); setEditingId(p.id); setShowForm(true); }}>Edit</Button>
-                      <Button variant="subtle" size="xs" color="red" onClick={() => handleDelete(p.id)}>Del</Button>
-                    </Group>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-          </ScrollArea>
-          {!showForm && (
-            <Button color="violet" fullWidth mt="md" onClick={() => { setForm({ name: '', number: '', position: DEFAULT_PLAYER_POSITIONS[0], isStarter: true, active: true }); setEditingId(null); setShowForm(true); }}>+ Add player</Button>
-          )}
-          {showForm && (
-            <Box mt="md" p="md" style={{ background: 'var(--mantine-color-dark-6)', borderRadius: 12, border: '2px solid var(--mantine-color-violet-6)' }}>
-              <Title order={5} mb="md">{editingId ? 'Edit player' : 'Add player'}</Title>
-            <Stack gap="sm" mb="md">
+        <Modal opened={showForm} onClose={() => { setShowForm(false); setEditingId(null); }} title={editingId ? 'Edit player' : 'Add player'} size="sm" centered>
+          <Stack gap="sm" mb="md">
               <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Name" className="w-full bg-zinc-800 text-white p-3 rounded-lg font-bold" />
               <input type="number" value={form.number} onChange={(e) => setForm({ ...form, number: e.target.value })} placeholder="Number (1–23)" min={1} max={23} className="w-full bg-zinc-800 text-white p-3 rounded-lg font-bold" />
-              <select value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="w-full bg-zinc-800 text-white p-3 rounded-lg font-bold">
-                {DEFAULT_PLAYER_POSITIONS.map((pos, i) => <option key={`${pos}-${i}`} value={pos}>{pos}</option>)}
-              </select>
+              <MultiSelect
+                label="Position (flexible; used when selecting team for a match)"
+                placeholder="Select one or more"
+                data={PLAYER_POSITION_OPTIONS}
+                value={form.position ? form.position.split(',').map((s) => s.trim()).filter(Boolean) : []}
+                onChange={(v) => setForm({ ...form, position: v.join(', ') })}
+                clearable
+              />
               <label className="flex items-center gap-2 text-white font-bold">
                 <input type="checkbox" checked={form.isStarter} onChange={(e) => setForm({ ...form, isStarter: e.target.checked })} />
                 Starting XV
@@ -1767,17 +1809,18 @@ const ManageTeamsPage: React.FC<{ onBack: () => void }> = () => {
                 Active (overwrites default “Player N” when roster is used in match)
               </label>
             </Stack>
-            <Group gap="sm">
-              <Button variant="default" fullWidth onClick={() => { setShowForm(false); setEditingId(null); }}>Cancel</Button>
-              <Button color="green" fullWidth onClick={handleSave} disabled={!form.name.trim() || !form.number}>Save</Button>
-            </Group>
-            </Box>
-          )}
-        </Card>
+          <Group gap="sm">
+            <Button variant="default" fullWidth onClick={() => { setShowForm(false); setEditingId(null); }}>Cancel</Button>
+            <Button color="green" fullWidth onClick={handleSave} disabled={!form.name.trim() || !form.number}>Save</Button>
+          </Group>
+        </Modal>
         </>
         )}
         {!selectedTeam && teams.length === 0 && (
           <Text size="sm" c="dimmed">Add a team to get started.</Text>
+        )}
+        {!selectedTeam && teams.length > 0 && (
+          <Text size="sm" c="dimmed">Select a team above to manage rosters and players.</Text>
         )}
       </Stack>
     </Box>
@@ -1976,7 +2019,8 @@ const ScoreButton: React.FC<{
   onClick: () => void;
   disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'penalty';
-}> = ({ label, points, onClick, disabled, variant = 'primary' }) => {
+  compact?: boolean;
+}> = ({ label, points, onClick, disabled, variant = 'primary', compact }) => {
   const [lastTap, setLastTap] = useState(0);
   const handleClick = () => {
     const now = Date.now();
@@ -1985,12 +2029,15 @@ const ScoreButton: React.FC<{
     onClick();
   };
   const bg = disabled ? '#3f3f46' : variant === 'secondary' ? '#059669' : variant === 'penalty' ? '#000' : '#000';
+  const style = compact
+    ? { ...ACTION_BUTTON_STYLE, minHeight: 40, padding: '8px 10px', fontSize: 12 }
+    : ACTION_BUTTON_STYLE;
   return (
     <button
       onClick={handleClick}
       disabled={disabled}
       style={{
-        ...ACTION_BUTTON_STYLE,
+        ...style,
         background: bg,
         color: '#fff',
         border: 'none',
@@ -1998,8 +2045,8 @@ const ScoreButton: React.FC<{
         cursor: disabled ? 'not-allowed' : 'pointer',
       }}
     >
-      <span style={{ display: 'block', fontSize: 16, opacity: 0.95 }}>{label}</span>
-      <span style={{ display: 'block', fontSize: 16 }}>+{points}</span>
+      <span style={{ display: 'block', fontSize: compact ? 12 : 16, opacity: 0.95 }}>{label}</span>
+      <span style={{ display: 'block', fontSize: compact ? 12 : 16 }}>+{points}</span>
     </button>
   );
 };
@@ -2007,7 +2054,8 @@ const ScoreButton: React.FC<{
 const CardButton: React.FC<{
   type: 'yellow' | 'red';
   onClick: () => void;
-}> = ({ type, onClick }) => {
+  compact?: boolean;
+}> = ({ type, onClick, compact }) => {
   const [lastTap, setLastTap] = useState(0);
   const handleClick = () => {
     const now = Date.now();
@@ -2017,11 +2065,12 @@ const CardButton: React.FC<{
   };
   const bg = type === 'yellow' ? '#facc15' : '#b91c1c';
   const color = type === 'yellow' ? '#000' : '#fff';
+  const style = compact ? { ...ACTION_BUTTON_STYLE, minHeight: 40, padding: '8px 10px', fontSize: 12 } : ACTION_BUTTON_STYLE;
   return (
     <button
       onClick={handleClick}
       style={{
-        ...ACTION_BUTTON_STYLE,
+        ...style,
         background: bg,
         color,
         border: 'none',
@@ -2100,10 +2149,16 @@ function isShirtColorBlack(hex: string): boolean {
   return luminance < 0.25;
 }
 
+/** Text color for contrast on shirt/button background: white on dark, black on light. */
+function getContrastTextColor(hex: string): string {
+  return isShirtColorBlack(hex) ? '#fff' : '#000';
+}
+
 const TeamSection: React.FC<{
   team: 'home' | 'away';
-  isTop?: boolean;
-}> = ({ team, isTop = false }) => {
+  /** Compact layout for side-by-side mobile view */
+  compact?: boolean;
+}> = ({ team, compact = false }) => {
   const [showPlayerPicker, setShowPlayerPicker] = useState(false);
   const [selectedAction, setSelectedAction] = useState<'score' | 'card' | null>(null);
   const [scoreType, setScoreType] = useState<ScoreEvent['type']>('try');
@@ -2160,60 +2215,65 @@ const TeamSection: React.FC<{
     ? [...pickerPlayers.map((p) => ({ id: p.id, number: p.number, name: p.name })), { id: UNKNOWN_PLAYER_ID, number: 0, name: 'Unknown' }]
     : pickerPlayers.map((p) => ({ id: p.id, number: p.number, name: p.name }));
 
+  const headerColor = getContrastTextColor(teamColor);
+  const gridCols = compact ? 2 : 4;
+  const scoreSize = compact ? '1.75rem' : '4rem';
+
   return (
-    <Box style={{ position: 'relative', paddingBottom: isTop ? 24 : 0, paddingTop: isTop ? 0 : 24 }}>
-      <Box style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', marginBottom: 16 }}>
+    <Box style={{ position: 'relative' }}>
+      <Box style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', marginBottom: compact ? 8 : 16 }}>
         <Box
           ta="center"
-          py="sm"
-          px="md"
+          py={compact ? 'xs' : 'sm'}
+          px="xs"
           style={{
             backgroundColor: teamColor,
-            color: isShirtColorBlack(teamColor) ? '#fff' : '#000',
-            borderRadius: 0,
+            color: headerColor,
+            borderRadius: compact ? 8 : 0,
             width: '100%',
-            marginBottom: 8,
+            marginBottom: 4,
           }}
         >
-          <Title order={2} fw={800} style={{ color: isShirtColorBlack(teamColor) ? '#fff' : '#000' }}>{teamName}</Title>
+          <Title order={compact ? 5 : 2} fw={800} style={{ color: headerColor, lineHeight: 1.2 }}>{teamName}</Title>
         </Box>
-        <Text ta="center" fw={800} style={{ fontSize: '4rem', lineHeight: 1, color: '#1a1a1a' }}>{score}</Text>
+        <Text ta="center" fw={800} style={{ fontSize: scoreSize, lineHeight: 1, color: '#1a1a1a' }}>{score}</Text>
       </Box>
 
-      <Box mb="sm">
-        <SimpleGrid cols={4} spacing="sm" mb="sm">
-          <ScoreButton label="Try" points={5} onClick={() => handleScoreClick('try')} />
+      <Box mb="xs">
+        <SimpleGrid cols={gridCols} spacing={compact ? 'xs' : 'sm'} mb="xs">
+          <ScoreButton label="Try" points={5} onClick={() => handleScoreClick('try')} compact={compact} />
           <ScoreButton
             label="Conv"
             points={2}
             onClick={() => handleScoreClick('conversion')}
             disabled={!canConvert}
             variant="secondary"
+            compact={compact}
           />
-          <ScoreButton label="Pen" points={3} onClick={() => handleScoreClick('penalty')} variant="penalty" />
-          <ScoreButton label="DG" points={3} onClick={() => handleScoreClick('drop-goal')} variant="penalty" />
+          <ScoreButton label="Pen" points={3} onClick={() => handleScoreClick('penalty')} variant="penalty" compact={compact} />
+          <ScoreButton label="DG" points={3} onClick={() => handleScoreClick('drop-goal')} variant="penalty" compact={compact} />
         </SimpleGrid>
-        <SimpleGrid cols={4} spacing="sm" mb="sm">
+        <SimpleGrid cols={gridCols} spacing={compact ? 'xs' : 'sm'} mb="xs">
           <button
             onClick={() => handleScoreClick('penalty-try')}
-            style={{ ...ACTION_BUTTON_STYLE, background: '#b91c1c', color: '#fff', border: 'none' }}
+            style={{ ...ACTION_BUTTON_STYLE, background: '#b91c1c', color: '#fff', border: 'none', minHeight: compact ? 40 : 48, padding: compact ? '8px 10px' : '12px 20px', fontSize: compact ? 11 : 16 }}
           >
             Penalty try (+7)
           </button>
           {cardTracking && (
             <>
-              <CardButton type="yellow" onClick={() => handleCardClick('yellow')} />
-              <CardButton type="red" onClick={() => handleCardClick('red')} />
+              <CardButton type="yellow" onClick={() => handleCardClick('yellow')} compact={compact} />
+              <CardButton type="red" onClick={() => handleCardClick('red')} compact={compact} />
             </>
           )}
         </SimpleGrid>
-        <SimpleGrid cols={4} spacing="sm">
+        <SimpleGrid cols={gridCols} spacing={compact ? 'xs' : 'sm'}>
           {substitutionsEnabled && (
             <button
               onClick={() => useMatchStore.getState().setShowSubstitutionModal(true)}
-              style={{ ...ACTION_BUTTON_STYLE, background: '#059669', color: '#fff', border: 'none' }}
+              style={{ ...ACTION_BUTTON_STYLE, background: '#059669', color: '#fff', border: 'none', minHeight: compact ? 40 : 48, padding: compact ? '8px 12px' : '12px 20px', fontSize: compact ? 12 : 16 }}
             >
-              🔄 Substitution
+              🔄 Sub
             </button>
           )}
         </SimpleGrid>
@@ -2251,7 +2311,7 @@ const TeamSection: React.FC<{
                     fontWeight: 700,
                     fontSize: 12,
                     minHeight: 56,
-                    color: '#fff',
+                    color: player.id === UNKNOWN_PLAYER_ID ? '#fff' : getContrastTextColor(teamColor),
                     border: '2px solid rgba(255,255,255,0.3)',
                     backgroundColor: player.id === UNKNOWN_PLAYER_ID ? '#78716c' : teamColor,
                   }}
@@ -2507,6 +2567,7 @@ const UndoAndLogPanel: React.FC = () => {
                   style={{
                     ...PLAYER_GRID_BUTTON_STYLE,
                     backgroundColor: (assigningEvent.team === 'home' ? homeColor : awayColor),
+                    color: getContrastTextColor(assigningEvent.team === 'home' ? homeColor : awayColor),
                     borderColor: 'rgba(255,255,255,0.3)',
                   }}
                 >
@@ -2589,7 +2650,7 @@ const SubstitutionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             style={{
               ...ACTION_BUTTON_STYLE,
               background: team === 'home' ? homeColor : '#52525b',
-              color: '#fff',
+              color: team === 'home' ? getContrastTextColor(homeColor) : '#fff',
               border: team === 'home' ? '2px solid #fff' : 'none',
             }}
           >
@@ -2601,7 +2662,7 @@ const SubstitutionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             style={{
               ...ACTION_BUTTON_STYLE,
               background: team === 'away' ? awayColor : '#52525b',
-              color: '#fff',
+              color: team === 'away' ? getContrastTextColor(awayColor) : '#fff',
               border: team === 'away' ? '2px solid #fff' : 'none',
             }}
           >
@@ -2619,6 +2680,7 @@ const SubstitutionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               style={{
                 ...PLAYER_GRID_BUTTON_STYLE,
                 backgroundColor: offId === p.id ? teamColor : '#52525b',
+                color: offId === p.id ? getContrastTextColor(teamColor) : '#fff',
                 borderColor: offId === p.id ? '#fff' : 'rgba(255,255,255,0.2)',
               }}
             >
@@ -2662,7 +2724,7 @@ const SubstitutionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
-// Match time panel: title-style clock, half on separate line (e.g. 1st Half: mm:ss)
+// Match time panel: clock + half label (Mantine Card)
 const MatchTimePanel: React.FC = () => {
   const currentHalf = useMatchStore((state) => state.currentHalf);
   const elapsedSeconds = useMatchStore((state) => state.elapsedSeconds);
@@ -2672,21 +2734,21 @@ const MatchTimePanel: React.FC = () => {
   const displayTime = elapsedSeconds;
 
   return (
-    <Box py="md" px="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
-      <Title order={3} ta="center" fw={700} style={{ userSelect: 'none', color: '#1a1a1a', marginBottom: 4 }}>
-        {formatTime(displayTime)}
-        {isOvertime && (
-          <Text component="span" size="sm" c="red" ml="xs">+{formatTime(displayTime - halfDuration)}</Text>
-        )}
-        {injuryTime > 0 && (
-          <Text component="span" size="xs" fw={700} c="yellow.8" ml="xs">+{injuryTime / 60}' injury</Text>
-        )}
-      </Title>
-      <Text ta="center" size="sm" fw={700} c="dark.5" style={{ color: '#555' }}>
-        {getHalfLabel(currentHalf)}: {formatTime(displayTime)}
-      </Text>
+    <Card shadow="sm" padding="sm" radius="md" withBorder mb="sm" style={{ background: 'var(--mantine-color-gray-1)' }}>
+      <Box ta="center">
+        <Title order={4} fw={700} style={{ userSelect: 'none', color: 'var(--mantine-color-dark-9)', marginBottom: 2 }}>
+          {formatTime(displayTime)}
+          {isOvertime && (
+            <Text component="span" size="xs" c="red" ml="xs">+{formatTime(displayTime - halfDuration)}</Text>
+          )}
+          {injuryTime > 0 && (
+            <Text component="span" size="xs" fw={700} c="yellow.8" ml="xs">+{injuryTime / 60}' injury</Text>
+          )}
+        </Title>
+        <Text size="xs" fw={700} c="dimmed">{getHalfLabel(currentHalf)}</Text>
+      </Box>
       <SinBinTimers />
-    </Box>
+    </Card>
   );
 };
 
@@ -2699,21 +2761,21 @@ const MatchControlsPanel: React.FC = () => {
   const endMatch = useMatchStore((state) => state.endMatch);
 
   return (
-    <Box py="md" px="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
-      <Group justify="center" gap="md">
+    <Card shadow="sm" padding="sm" radius="md" withBorder mb="sm" style={{ background: 'var(--mantine-color-gray-1)' }}>
+      <Group justify="center" gap="xs">
         <Button
-          size="lg"
+          size="md"
           color={isRunning ? 'red' : 'green'}
           onClick={toggleTimer}
-          style={{ minWidth: 120, borderRadius: 16 }}
+          style={{ flex: 1, minWidth: 0, borderRadius: 12 }}
         >
           {isRunning ? '⏸ Pause' : '▶ Start'}
         </Button>
-        <Button size="lg" variant="light" color="blue" onClick={nextHalf} style={{ minWidth: 120, borderRadius: 16 }}>
+        <Button size="md" variant="light" color="blue" onClick={nextHalf} style={{ flex: 1, minWidth: 0, borderRadius: 12 }}>
           Next half
         </Button>
         <Button
-          size="lg"
+          size="md"
           variant="filled"
           color="red"
           onClick={async () => {
@@ -2728,11 +2790,162 @@ const MatchControlsPanel: React.FC = () => {
             endMatch();
             if (navigateAfterEnd) navigateAfterEnd('matches');
           }}
-          style={{ minWidth: 120, borderRadius: 16 }}
+          style={{ flex: 1, minWidth: 0, borderRadius: 12 }}
         >
           End match
         </Button>
       </Group>
+    </Card>
+  );
+};
+
+// Admin password: env VITE_ADMIN_PASSWORD or "admin" for testing
+const ADMIN_PASSWORD = typeof import.meta.env.VITE_ADMIN_PASSWORD === 'string'
+  ? import.meta.env.VITE_ADMIN_PASSWORD
+  : 'admin';
+
+const AdminGate: React.FC = () => {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === ADMIN_PASSWORD) {
+      setAuthenticated(true);
+      setError('');
+    } else {
+      setError('Incorrect password');
+    }
+  };
+
+  const goToApp = () => { window.location.href = '/'; };
+  const adminContent = authenticated ? (
+    <AdminPage />
+  ) : (
+    <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, minHeight: '100%' }}>
+      <Card shadow="sm" padding="lg" radius="md" withBorder maw={400} w="100%">
+        <Title order={3} mb="md">Admin</Title>
+        <form onSubmit={handleSubmit}>
+          <Stack gap="md">
+            <TextInput
+              label="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter admin password"
+              error={error}
+              autoComplete="current-password"
+            />
+            <Button type="submit" fullWidth>Continue</Button>
+          </Stack>
+        </form>
+      </Card>
+    </Box>
+  );
+  return (
+    <ShellLayout view="home" setView={goToApp}>
+      {adminContent}
+    </ShellLayout>
+  );
+};
+
+const AdminPage: React.FC = () => {
+  const [clearModalOpen, setClearModalOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const handleClearAll = async () => {
+    setLoading(true);
+    try {
+      await clearAllData();
+      setClearModalOpen(false);
+      setMessage('All data cleared.');
+    } catch (e) {
+      setMessage('Failed to clear data.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddDemo = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      await seedReedsDemoData();
+      setMessage('Demo data (Reeds team) added.');
+    } catch (e) {
+      setMessage('Failed to add demo data.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddEngland = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      await seedEnglandDemoData();
+      setMessage('England team (v Wales 2026) added.');
+    } catch (e) {
+      setMessage('Failed to add England team.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box py="md" pb={80}>
+      <Box maw={480} mx="auto">
+        <Title order={3} mb="lg">Admin</Title>
+        <Card shadow="sm" padding="lg" radius="md" withBorder mb="md">
+          <Text size="sm" fw={700} tt="uppercase" c="dimmed" mb="sm" style={{ letterSpacing: '0.05em' }}>Data</Text>
+          <Stack gap="sm">
+            <Button
+              color="red"
+              variant="light"
+              fullWidth
+              onClick={() => setClearModalOpen(true)}
+              disabled={loading}
+            >
+              Clear all data
+            </Button>
+            <Button
+              color="green"
+              variant="light"
+              fullWidth
+              onClick={handleAddDemo}
+              disabled={loading}
+            >
+              Add demo data (Reeds)
+            </Button>
+            <Button
+              color="red"
+              variant="light"
+              fullWidth
+              onClick={handleAddEngland}
+              disabled={loading}
+            >
+              Add England team
+            </Button>
+          </Stack>
+          {message && <Text size="sm" c={message.startsWith('Failed') ? 'red' : 'dimmed'} mt="md">{message}</Text>}
+        </Card>
+        <Modal
+          opened={clearModalOpen}
+          onClose={() => !loading && setClearModalOpen(false)}
+          title="Clear all data?"
+          centered
+        >
+          <Text size="sm" c="dimmed" mb="md">
+            This will permanently delete all teams, players, rosters and matches. This cannot be undone.
+          </Text>
+          <Group justify="flex-end" gap="sm">
+            <Button variant="default" onClick={() => setClearModalOpen(false)} disabled={loading}>Cancel</Button>
+            <Button color="red" onClick={handleClearAll} loading={loading}>Clear all</Button>
+          </Group>
+        </Modal>
+      </Box>
     </Box>
   );
 };
@@ -2740,6 +2953,8 @@ const MatchControlsPanel: React.FC = () => {
 // Main App
 const App: React.FC = () => {
   useTimer();
+  if (window.location.pathname === '/admin') return <AdminGate />;
+
   const [view, setView] = useState<AppView>('home');
   const matchStarted = useMatchStore((state) => state.matchStarted);
   const isRunning = useMatchStore((state) => state.isRunning);
@@ -2752,11 +2967,7 @@ const App: React.FC = () => {
 
   useWakeLock(matchStarted && isRunning);
 
-  useEffect(() => {
-    seedDefaultTeamsIfNeeded()
-      .then(() => seedSampleData())
-      .catch(() => {});
-  }, []);
+  // No default seed: new users start with no data. Use /admin to add demo data.
 
   if (!matchStarted) {
     let content: React.ReactNode;
@@ -2774,7 +2985,15 @@ const App: React.FC = () => {
 
   return (
     <NavContext.Provider value={setView}>
-    <Box className="min-h-screen overflow-hidden" style={{ background: 'var(--mantine-color-dark-8)' }}>
+    <Box
+      className="min-h-screen overflow-auto"
+      style={{
+        background: 'var(--mantine-color-dark-7)',
+        minHeight: '100dvh',
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+    >
       <style>{`
         input[type="number"]::-webkit-inner-spin-button,
         input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -2782,23 +3001,32 @@ const App: React.FC = () => {
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
         .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
       `}</style>
-      <Box maw={720} mx="auto">
-        <Box py="sm" px="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
-          <Title order={3} ta="center" fw={800} style={{ color: '#1a1a1a' }}>
-            {homeTeam} {homeScore} — {awayScore} {awayTeam}
-          </Title>
-        </Box>
+      <Box maw={720} mx="auto" px="sm" pb="md">
+        {/* Compact sticky score + time bar */}
+        <Card shadow="sm" padding="xs" radius="md" withBorder mb="sm" style={{ background: 'var(--mantine-color-gray-1)' }}>
+          <Group justify="space-between" wrap="nowrap" gap="xs">
+            <Text fw={800} size="sm" lineClamp={1} style={{ flex: '1 1 0', minWidth: 0 }}>{homeTeam}</Text>
+            <Text fw={800} size="lg" style={{ flexShrink: 0 }}>{homeScore} – {awayScore}</Text>
+            <Text fw={800} size="sm" lineClamp={1} ta="right" style={{ flex: '1 1 0', minWidth: 0 }}>{awayTeam}</Text>
+          </Group>
+        </Card>
+
         <MatchTimePanel />
         <MatchControlsPanel />
-        <Box p="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
-          <TeamSection team="home" />
-        </Box>
-        <Box p="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
-          <TeamSection team="away" isTop />
-        </Box>
-        <Box p="md" style={{ background: '#e8e8ec', borderBottom: '1px solid #ccc' }}>
+
+        {/* Two-column layout: Home | Away so both visible on mobile */}
+        <SimpleGrid cols={2} spacing="sm" mb="sm" style={{ minHeight: 0 }}>
+          <Card shadow="sm" padding="sm" radius="md" withBorder style={{ background: 'var(--mantine-color-gray-1)', overflow: 'hidden' }}>
+            <TeamSection team="home" compact />
+          </Card>
+          <Card shadow="sm" padding="sm" radius="md" withBorder style={{ background: 'var(--mantine-color-gray-1)', overflow: 'hidden' }}>
+            <TeamSection team="away" compact />
+          </Card>
+        </SimpleGrid>
+
+        <Card shadow="sm" padding="md" radius="md" withBorder style={{ background: 'var(--mantine-color-gray-1)' }}>
           <UndoAndLogPanel />
-        </Box>
+        </Card>
       </Box>
       {showSubModal && <SubstitutionModal onClose={() => setShowSubModal(false)} />}
     </Box>
