@@ -28,7 +28,7 @@ export async function seedSampleData(): Promise<void> {
   const twoWeeksAgo = now - 14 * 24 * 60 * 60 * 1000;
 
   const config = { playerTracking: true, cardTracking: true, substitutions: true };
-  const baseMatch: Omit<Match, 'id' | 'homeTeamName' | 'awayTeamName' | 'homeColor' | 'awayColor' | 'homeScore' | 'awayScore' | 'scheduledAt' | 'startedAt' | 'endedAt' | 'status' | 'venue' | 'competition' | 'log' | 'createdAt' | 'updatedAt'> = {
+  const baseMatch: Omit<Match, 'id' | 'homeTeamName' | 'awayTeamName' | 'homeColor' | 'awayColor' | 'homeScore' | 'awayScore' | 'scheduledAt' | 'startedAt' | 'endedAt' | 'status' | 'log' | 'createdAt' | 'updatedAt'> = {
     homeTeamId: 'home',
     awayTeamId: 'away',
     halfDuration: 40 * 60,

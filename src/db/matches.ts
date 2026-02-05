@@ -124,7 +124,7 @@ function buildLogFromSnapshot(snap: MatchSnapshot): LogEvent[] {
   return log;
 }
 
-export async function createMatch(snap: MatchSnapshot, status: MatchStatus = 'live'): Promise<string> {
+export async function createMatch(snap: MatchSnapshot, status: MatchStatus = 'playing'): Promise<string> {
   const id = crypto.randomUUID();
   const now = Date.now();
   const log = buildLogFromSnapshot(snap);

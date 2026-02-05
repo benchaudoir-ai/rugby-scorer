@@ -150,7 +150,7 @@ const useMatchStore = create<MatchState & {
   setCurrentMatchId: (id: string | null) => void;
   showSubstitutionModal: boolean;
   setShowSubstitutionModal: (v: boolean) => void;
-}>(
+}>()(
   persist(
     (set, get) => ({
       // Match state

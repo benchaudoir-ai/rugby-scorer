@@ -10,7 +10,8 @@ export async function getPlayersByTeam(teamId: string): Promise<Player[]> {
 }
 
 export async function getAllPlayers(): Promise<Player[]> {
-  return db.players.orderBy('teamId').then((byTeam) => byTeam.sort((a, b) => a.number - b.number));
+  const byTeam = await db.players.orderBy('teamId').toArray();
+  return byTeam.sort((a, b) => a.number - b.number);
 }
 
 export async function getPlayer(id: string): Promise<Player | undefined> {
