@@ -6,6 +6,8 @@ Offline-first web app for scoring rugby matches: team setup, live scoring, cards
 
 **Admin:** A hidden admin screen is available at `/admin` (e.g. `http://localhost:5173/admin`). It is protected by a password. Set the environment variable `VITE_ADMIN_PASSWORD` to your chosen password (e.g. in a `.env` file); if unset, the default password is `admin` (for testing). From the admin screen you can clear all data or add demo data (Reeds team with sample players).
 
+**Production /admin:** The build outputs `404.html` (copy of `index.html`) so that GitHub Pages serves the app for `/admin` and other client routes. Netlify uses `public/_redirects`; Vercel uses `vercel.json` rewrites. Redeploy after pulling these changes so `/admin` works in production.
+
 ---
 
 # React + TypeScript + Vite
