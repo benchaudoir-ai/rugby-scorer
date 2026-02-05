@@ -1,0 +1,1017 @@
+import React, { useState, useEffect } from 'react';
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+// Types
+interface Player {
+  number: number;
+  name: string;
+}
+
+interface ScoreEvent {
+  id: string;
+  timestamp: number;
+  team: 'home' | 'away';
+  type: 'try' | 'conversion' | 'penalty' | 'drop-goal' | 'penalty-try';
+  points: number;
+  player?: number;
+  half: number;
+  minute: number;
+}
+
+interface Card {
+  id: string;
+  timestamp: number;
+  team: 'home' | 'away';
+  player: number;
+  type: 'yellow' | 'red';
+  half: number;
+  minute: number;
+  returnTime?: number;
+}
+
+interface MatchState {
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  scoreEvents: ScoreEvent[];
+  cards: Card[];
+  currentHalf: number;
+  elapsedSeconds: number;
+  isRunning: boolean;
+  halfDuration: number;
+  lastTryTeam: 'home' | 'away' | null;
+}
+
+interface MatchConfig {
+  homeTeam: string;
+  awayTeam: string;
+  homeColor: string;
+  awayColor: string;
+  halfDuration: number;
+  playerTracking: boolean;
+  cardTracking: boolean;
+  substitutions: boolean;
+  competition?: string;
+  venue?: string;
+  referee?: string;
+}
+
+// Zustand Store
+const useMatchStore = create<MatchState & MatchConfig & {
+  matchStarted: boolean;
+  addScore: (team: 'home' | 'away', type: ScoreEvent['type'], player?: number) => void;
+  addCard: (team: 'home' | 'away', player: number, type: 'yellow' | 'red') => void;
+  undo: () => void;
+  toggleTimer: () => void;
+  tick: () => void;
+  nextHalf: () => void;
+  reset: () => void;
+  setTeamName: (team: 'home' | 'away', name: string) => void;
+  updateConfig: (config: Partial<MatchConfig>) => void;
+  startMatch: () => void;
+  endMatch: () => void;
+}>(
+  persist(
+    (set, get) => ({
+      // Match state
+      homeTeam: 'Home',
+      awayTeam: 'Away',
+      homeScore: 0,
+      awayScore: 0,
+      scoreEvents: [],
+      cards: [],
+      currentHalf: 1,
+      elapsedSeconds: 0,
+      isRunning: false,
+      halfDuration: 40 * 60,
+      lastTryTeam: null,
+      matchStarted: false,
+      
+      // Config
+      homeColor: '#3b82f6',
+      awayColor: '#ef4444',
+      playerTracking: true,
+      cardTracking: true,
+      substitutions: false,
+      competition: '',
+      venue: '',
+      referee: '',
+
+      setTeamName: (team, name) => set({ [team === 'home' ? 'homeTeam' : 'awayTeam']: name }),
+      
+      updateConfig: (config) => set(config),
+      
+      startMatch: () => set({ matchStarted: true }),
+      
+      endMatch: () => set({ 
+        matchStarted: false,
+        homeScore: 0,
+        awayScore: 0,
+        scoreEvents: [],
+        cards: [],
+        currentHalf: 1,
+        elapsedSeconds: 0,
+        isRunning: false,
+        lastTryTeam: null,
+      }),
+
+      addScore: (team, type, player) => {
+        const state = get();
+        
+        // Prevent conversion if no recent try
+        if (type === 'conversion' && state.lastTryTeam !== team) return;
+
+        const points = {
+          'try': 5,
+          'conversion': 2,
+          'penalty': 3,
+          'drop-goal': 3,
+          'penalty-try': 7,
+        }[type];
+
+        const event: ScoreEvent = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          team,
+          type,
+          points,
+          player,
+          half: state.currentHalf,
+          minute: Math.floor(state.elapsedSeconds / 60),
+        };
+
+        const scoreKey = team === 'home' ? 'homeScore' : 'awayScore';
+        
+        set({
+          [scoreKey]: state[scoreKey] + points,
+          scoreEvents: [...state.scoreEvents, event],
+          lastTryTeam: type === 'try' || type === 'penalty-try' ? team : null,
+        });
+      },
+
+      addCard: (team, player, type) => {
+        const state = get();
+        const card: Card = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          team,
+          player,
+          type,
+          half: state.currentHalf,
+          minute: Math.floor(state.elapsedSeconds / 60),
+          returnTime: type === 'yellow' ? state.elapsedSeconds + 600 : undefined,
+        };
+
+        set({ cards: [...state.cards, card] });
+      },
+
+      undo: () => {
+        const state = get();
+        const lastEvent = state.scoreEvents[state.scoreEvents.length - 1];
+        const lastCard = state.cards[state.cards.length - 1];
+        
+        const lastEventTime = lastEvent?.timestamp || 0;
+        const lastCardTime = lastCard?.timestamp || 0;
+
+        if (lastEventTime > lastCardTime && lastEvent) {
+          const scoreKey = lastEvent.team === 'home' ? 'homeScore' : 'awayScore';
+          set({
+            [scoreKey]: state[scoreKey] - lastEvent.points,
+            scoreEvents: state.scoreEvents.slice(0, -1),
+            lastTryTeam: lastEvent.type === 'conversion' ? lastEvent.team : 
+                        state.scoreEvents[state.scoreEvents.length - 2]?.type === 'try' ? 
+                        state.scoreEvents[state.scoreEvents.length - 2].team : null,
+          });
+        } else if (lastCard) {
+          set({ cards: state.cards.slice(0, -1) });
+        }
+      },
+
+      toggleTimer: () => set((state) => ({ isRunning: !state.isRunning })),
+
+      tick: () => set((state) => 
+        state.isRunning ? { elapsedSeconds: state.elapsedSeconds + 1 } : {}
+      ),
+
+      nextHalf: () => set((state) => ({
+        currentHalf: state.currentHalf + 1,
+        elapsedSeconds: 0,
+        isRunning: false,
+      })),
+
+      reset: () => set({
+        homeScore: 0,
+        awayScore: 0,
+        scoreEvents: [],
+        cards: [],
+        currentHalf: 1,
+        elapsedSeconds: 0,
+        isRunning: false,
+        lastTryTeam: null,
+      }),
+    }),
+    {
+      name: 'rugby-match-storage',
+    }
+  )
+);
+
+// Timer Effect
+const useTimer = () => {
+  const tick = useMatchStore((state) => state.tick);
+  
+  useEffect(() => {
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [tick]);
+};
+
+// Format time
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+// Predefined color palette
+const TEAM_COLORS = [
+  { name: 'Blue', value: '#3b82f6', contrast: '#ffffff' },
+  { name: 'Red', value: '#ef4444', contrast: '#ffffff' },
+  { name: 'Green', value: '#22c55e', contrast: '#000000' },
+  { name: 'Yellow', value: '#eab308', contrast: '#000000' },
+  { name: 'Purple', value: '#a855f7', contrast: '#ffffff' },
+  { name: 'Orange', value: '#f97316', contrast: '#ffffff' },
+  { name: 'Pink', value: '#ec4899', contrast: '#ffffff' },
+  { name: 'Teal', value: '#14b8a6', contrast: '#000000' },
+  { name: 'Indigo', value: '#6366f1', contrast: '#ffffff' },
+  { name: 'Black', value: '#18181b', contrast: '#ffffff' },
+  { name: 'White', value: '#fafafa', contrast: '#000000' },
+  { name: 'Navy', value: '#1e3a8a', contrast: '#ffffff' },
+];
+
+// Game Setup Screen
+const GameSetup: React.FC = () => {
+  const config = useMatchStore();
+  const updateConfig = useMatchStore((state) => state.updateConfig);
+  const startMatch = useMatchStore((state) => state.startMatch);
+  
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+
+  const handleFieldChange = (field: string, value: any) => {
+    updateConfig({ [field]: value });
+    setIsDirty(true);
+    // Clear error for this field
+    if (errors[field]) {
+      setErrors({ ...errors, [field]: '' });
+    }
+  };
+
+  const validate = () => {
+    const newErrors: Record<string, string> = {};
+    
+    if (!config.homeTeam.trim() || config.homeTeam.length < 2) {
+      newErrors.homeTeam = 'Team name must be at least 2 characters';
+    }
+    
+    if (!config.awayTeam.trim() || config.awayTeam.length < 2) {
+      newErrors.awayTeam = 'Team name must be at least 2 characters';
+    }
+    
+    if (config.homeTeam.trim().toLowerCase() === config.awayTeam.trim().toLowerCase()) {
+      newErrors.awayTeam = 'Team names must be different';
+    }
+    
+    if (config.homeColor === config.awayColor) {
+      newErrors.awayColor = 'Team colors must be different';
+    }
+    
+    if (config.halfDuration < 5 || config.halfDuration > 60) {
+      newErrors.halfDuration = 'Half duration must be between 5 and 60 minutes';
+    }
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleStartMatch = () => {
+    if (validate()) {
+      if (isDirty || confirm('Start match with these settings?')) {
+        startMatch();
+      }
+    }
+  };
+
+  // Prevent accidental navigation
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white pb-32">
+      <div className="max-w-2xl mx-auto p-6">
+        {/* Header */}
+        <div className="mb-8 pt-4">
+          <h1 className="text-white font-black text-5xl mb-2">MATCH SETUP</h1>
+          <p className="text-zinc-400 text-lg font-bold">Configure your rugby match</p>
+        </div>
+
+        {/* Team A */}
+        <div className="mb-8">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Home Team
+          </label>
+          <input
+            type="text"
+            value={config.homeTeam}
+            onChange={(e) => handleFieldChange('homeTeam', e.target.value)}
+            placeholder="Enter team name"
+            className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl
+                       border-4 border-zinc-800 focus:border-blue-500 focus:outline-none
+                       placeholder:text-zinc-700"
+          />
+          {errors.homeTeam && (
+            <p className="text-red-400 text-sm font-bold mt-2">⚠ {errors.homeTeam}</p>
+          )}
+        </div>
+
+        {/* Team A Color */}
+        <div className="mb-8">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Home Team Color
+          </label>
+          <div className="grid grid-cols-4 gap-3">
+            {TEAM_COLORS.map((color) => (
+              <button
+                key={color.value}
+                onClick={() => handleFieldChange('homeColor', color.value)}
+                className={`aspect-square rounded-xl font-black text-sm transition-all
+                           ${config.homeColor === color.value 
+                             ? 'ring-4 ring-white scale-95' 
+                             : 'ring-2 ring-zinc-800 active:scale-90'}`}
+                style={{ 
+                  backgroundColor: color.value,
+                  color: color.contrast,
+                }}
+              >
+                {config.homeColor === color.value && '✓'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Team B */}
+        <div className="mb-8">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Away Team
+          </label>
+          <input
+            type="text"
+            value={config.awayTeam}
+            onChange={(e) => handleFieldChange('awayTeam', e.target.value)}
+            placeholder="Enter team name"
+            className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl
+                       border-4 border-zinc-800 focus:border-red-500 focus:outline-none
+                       placeholder:text-zinc-700"
+          />
+          {errors.awayTeam && (
+            <p className="text-red-400 text-sm font-bold mt-2">⚠ {errors.awayTeam}</p>
+          )}
+        </div>
+
+        {/* Team B Color */}
+        <div className="mb-8">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Away Team Color
+          </label>
+          <div className="grid grid-cols-4 gap-3">
+            {TEAM_COLORS.map((color) => (
+              <button
+                key={color.value}
+                onClick={() => handleFieldChange('awayColor', color.value)}
+                className={`aspect-square rounded-xl font-black text-sm transition-all
+                           ${config.awayColor === color.value 
+                             ? 'ring-4 ring-white scale-95' 
+                             : 'ring-2 ring-zinc-800 active:scale-90'}`}
+                style={{ 
+                  backgroundColor: color.value,
+                  color: color.contrast,
+                }}
+              >
+                {config.awayColor === color.value && '✓'}
+              </button>
+            ))}
+          </div>
+          {errors.awayColor && (
+            <p className="text-red-400 text-sm font-bold mt-2">⚠ {errors.awayColor}</p>
+          )}
+        </div>
+
+        {/* Match Length */}
+        <div className="mb-8">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Minutes Per Half
+          </label>
+          <div className="grid grid-cols-4 gap-3 mb-3">
+            {[20, 30, 40, 45].map((mins) => (
+              <button
+                key={mins}
+                onClick={() => handleFieldChange('halfDuration', mins * 60)}
+                className={`p-4 rounded-xl font-black text-xl transition-all
+                           ${config.halfDuration === mins * 60
+                             ? 'bg-blue-600 text-white scale-95'
+                             : 'bg-zinc-900 text-zinc-400 active:scale-90'}`}
+              >
+                {mins}
+              </button>
+            ))}
+          </div>
+          <input
+            type="number"
+            value={config.halfDuration / 60}
+            onChange={(e) => handleFieldChange('halfDuration', parseInt(e.target.value) * 60)}
+            min="5"
+            max="60"
+            className="w-full bg-zinc-900 text-white text-xl font-black p-4 rounded-xl
+                       border-4 border-zinc-800 focus:border-blue-500 focus:outline-none text-center"
+          />
+          {errors.halfDuration && (
+            <p className="text-red-400 text-sm font-bold mt-2">⚠ {errors.halfDuration}</p>
+          )}
+        </div>
+
+        {/* Feature Toggles */}
+        <div className="mb-8 space-y-4">
+          <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+            Features
+          </label>
+          
+          <ToggleField
+            label="Player Tracking"
+            description="Track which players score"
+            value={config.playerTracking}
+            onChange={(val) => handleFieldChange('playerTracking', val)}
+          />
+          
+          <ToggleField
+            label="Card Tracking"
+            description="Track yellow & red cards"
+            value={config.cardTracking}
+            onChange={(val) => handleFieldChange('cardTracking', val)}
+          />
+          
+          <ToggleField
+            label="Substitutions"
+            description="Track player substitutions"
+            value={config.substitutions}
+            onChange={(val) => handleFieldChange('substitutions', val)}
+          />
+        </div>
+
+        {/* Advanced Options */}
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="w-full bg-zinc-900 text-zinc-400 font-black p-4 rounded-xl mb-4
+                     active:bg-zinc-800 transition-all"
+        >
+          {showAdvanced ? '▼' : '▶'} ADVANCED OPTIONS
+        </button>
+
+        {showAdvanced && (
+          <div className="space-y-6 mb-8">
+            <div>
+              <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+                Competition Name (Optional)
+              </label>
+              <input
+                type="text"
+                value={config.competition}
+                onChange={(e) => handleFieldChange('competition', e.target.value)}
+                placeholder="e.g. Six Nations, Rugby World Cup"
+                className="w-full bg-zinc-900 text-white text-lg font-bold p-4 rounded-xl
+                           border-2 border-zinc-800 focus:border-zinc-600 focus:outline-none
+                           placeholder:text-zinc-700"
+              />
+            </div>
+
+            <div>
+              <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+                Venue (Optional)
+              </label>
+              <input
+                type="text"
+                value={config.venue}
+                onChange={(e) => handleFieldChange('venue', e.target.value)}
+                placeholder="e.g. Twickenham Stadium"
+                className="w-full bg-zinc-900 text-white text-lg font-bold p-4 rounded-xl
+                           border-2 border-zinc-800 focus:border-zinc-600 focus:outline-none
+                           placeholder:text-zinc-700"
+              />
+            </div>
+
+            <div>
+              <label className="block text-zinc-400 font-black text-sm mb-3 uppercase tracking-wide">
+                Referee (Optional)
+              </label>
+              <input
+                type="text"
+                value={config.referee}
+                onChange={(e) => handleFieldChange('referee', e.target.value)}
+                placeholder="e.g. Wayne Barnes"
+                className="w-full bg-zinc-900 text-white text-lg font-bold p-4 rounded-xl
+                           border-2 border-zinc-800 focus:border-zinc-600 focus:outline-none
+                           placeholder:text-zinc-700"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Start Match Button (Fixed) */}
+        <div className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-zinc-950 via-zinc-950 to-transparent">
+          <button
+            onClick={handleStartMatch}
+            className="w-full max-w-2xl mx-auto bg-gradient-to-r from-blue-600 to-blue-500 
+                       text-white font-black text-2xl p-6 rounded-xl
+                       active:scale-98 transition-all shadow-2xl
+                       border-4 border-blue-400"
+          >
+            START MATCH →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ToggleField: React.FC<{
+  label: string;
+  description: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+}> = ({ label, description, value, onChange }) => (
+  <div className="flex items-center justify-between bg-zinc-900 p-5 rounded-xl">
+    <div className="flex-1">
+      <div className="text-white font-black text-lg mb-1">{label}</div>
+      <div className="text-zinc-500 text-sm font-bold">{description}</div>
+    </div>
+    <button
+      onClick={() => onChange(!value)}
+      className={`w-16 h-9 rounded-full transition-all flex items-center p-1
+                  ${value ? 'bg-green-600' : 'bg-zinc-700'}`}
+    >
+      <div className={`w-7 h-7 bg-white rounded-full transition-all shadow-lg
+                      ${value ? 'translate-x-7' : 'translate-x-0'}`} />
+    </button>
+  </div>
+);
+
+// Components
+const ScoreButton: React.FC<{
+  label: string;
+  points: number;
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: 'primary' | 'secondary' | 'penalty';
+}> = ({ label, points, onClick, disabled, variant = 'primary' }) => {
+  const bgColor = disabled ? 'bg-zinc-700' : 
+                 variant === 'penalty' ? 'bg-amber-600 active:bg-amber-700' :
+                 variant === 'secondary' ? 'bg-emerald-600 active:bg-emerald-700' :
+                 'bg-blue-600 active:bg-blue-700';
+  
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`${bgColor} text-white font-black text-lg p-4 rounded-lg
+                  transition-all duration-75 shadow-lg
+                  ${disabled ? 'opacity-40 cursor-not-allowed' : 'active:scale-95 active:shadow-md'}`}
+    >
+      <div className="text-sm opacity-80 font-bold">{label}</div>
+      <div className="text-3xl">+{points}</div>
+    </button>
+  );
+};
+
+const CardButton: React.FC<{
+  type: 'yellow' | 'red';
+  onClick: () => void;
+}> = ({ type, onClick }) => (
+  <button
+    onClick={onClick}
+    className={`${type === 'yellow' ? 'bg-yellow-400' : 'bg-red-600'} 
+                text-black font-black text-sm p-3 rounded-lg
+                transition-all duration-75 shadow-lg active:scale-95`}
+  >
+    {type === 'yellow' ? '🟨' : '🟥'} {type.toUpperCase()}
+  </button>
+);
+
+const TeamSection: React.FC<{
+  team: 'home' | 'away';
+  isTop?: boolean;
+}> = ({ team, isTop = false }) => {
+  const [showPlayerPicker, setShowPlayerPicker] = useState(false);
+  const [selectedAction, setSelectedAction] = useState<'score' | 'card' | null>(null);
+  const [scoreType, setScoreType] = useState<ScoreEvent['type']>('try');
+  const [cardType, setCardType] = useState<'yellow' | 'red'>('yellow');
+  const [playerNum, setPlayerNum] = useState('');
+
+  const teamName = useMatchStore((state) => team === 'home' ? state.homeTeam : state.awayTeam);
+  const teamColor = useMatchStore((state) => team === 'home' ? state.homeColor : state.awayColor);
+  const score = useMatchStore((state) => team === 'home' ? state.homeScore : state.awayScore);
+  const lastTryTeam = useMatchStore((state) => state.lastTryTeam);
+  const playerTracking = useMatchStore((state) => state.playerTracking);
+  const cardTracking = useMatchStore((state) => state.cardTracking);
+  const addScore = useMatchStore((state) => state.addScore);
+  const addCard = useMatchStore((state) => state.addCard);
+
+  const canConvert = lastTryTeam === team;
+
+  const handleScoreClick = (type: ScoreEvent['type']) => {
+    if (type === 'penalty-try' || !playerTracking) {
+      addScore(team, type);
+    } else {
+      setScoreType(type);
+      setSelectedAction('score');
+      setShowPlayerPicker(true);
+    }
+  };
+
+  const handleCardClick = (type: 'yellow' | 'red') => {
+    if (!playerTracking) return;
+    setCardType(type);
+    setSelectedAction('card');
+    setShowPlayerPicker(true);
+  };
+
+  const handlePlayerSubmit = () => {
+    const num = parseInt(playerNum);
+    if (!num || num < 1 || num > 23) return;
+
+    if (selectedAction === 'score') {
+      addScore(team, scoreType, num);
+    } else if (selectedAction === 'card') {
+      addCard(team, num, cardType);
+    }
+
+    setShowPlayerPicker(false);
+    setPlayerNum('');
+  };
+
+  return (
+    <div className={`relative ${isTop ? 'pb-6' : 'pt-6'}`}>
+      {/* Team Header with dynamic color */}
+      <div className={`flex items-center justify-between mb-4 ${isTop ? 'flex-col-reverse' : 'flex-col'}`}>
+        <div 
+          className="text-center font-black text-2xl px-6 py-2 rounded-full w-full mb-2"
+          style={{ backgroundColor: teamColor, color: '#ffffff' }}
+        >
+          {teamName}
+        </div>
+        <div className="text-white font-black text-7xl tracking-tighter">{score}</div>
+      </div>
+
+      {/* Score Actions */}
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <ScoreButton label="TRY" points={5} onClick={() => handleScoreClick('try')} />
+        <ScoreButton 
+          label="CONVERSION" 
+          points={2} 
+          onClick={() => handleScoreClick('conversion')}
+          disabled={!canConvert}
+          variant="secondary"
+        />
+        <ScoreButton label="PENALTY" points={3} onClick={() => handleScoreClick('penalty')} variant="penalty" />
+        <ScoreButton label="DROP GOAL" points={3} onClick={() => handleScoreClick('drop-goal')} variant="penalty" />
+      </div>
+      
+      {/* Penalty Try */}
+      <button
+        onClick={() => handleScoreClick('penalty-try')}
+        className="w-full bg-red-700 text-white font-black text-sm p-3 rounded-lg mb-3
+                   transition-all duration-75 shadow-lg active:scale-95"
+      >
+        PENALTY TRY (+7)
+      </button>
+
+      {/* Cards - only show if enabled */}
+      {cardTracking && (
+        <div className="grid grid-cols-2 gap-3">
+          <CardButton type="yellow" onClick={() => handleCardClick('yellow')} />
+          <CardButton type="red" onClick={() => handleCardClick('red')} />
+        </div>
+      )}
+
+      {/* Player Number Picker - only show if player tracking enabled */}
+      {showPlayerPicker && playerTracking && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 rounded-2xl p-6 w-full max-w-sm border-4 border-white">
+            <h3 className="text-white font-black text-2xl mb-4 text-center">
+              {selectedAction === 'score' ? `${scoreType.toUpperCase()}` : `${cardType.toUpperCase()} CARD`}
+            </h3>
+            <p className="text-zinc-400 text-sm mb-4 text-center font-bold">Enter player number (1-23)</p>
+            
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              max="23"
+              value={playerNum}
+              onChange={(e) => setPlayerNum(e.target.value)}
+              className="w-full bg-zinc-800 text-white text-4xl font-black text-center p-4 rounded-lg
+                         border-2 border-zinc-700 focus:border-white focus:outline-none mb-4"
+              autoFocus
+            />
+            
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  setShowPlayerPicker(false);
+                  setPlayerNum('');
+                }}
+                className="bg-zinc-700 text-white font-black p-4 rounded-lg active:bg-zinc-600"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handlePlayerSubmit}
+                disabled={!playerNum || parseInt(playerNum) < 1 || parseInt(playerNum) > 23}
+                className="bg-blue-600 text-white font-black p-4 rounded-lg active:bg-blue-700
+                           disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                CONFIRM
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const MatchControls: React.FC = () => {
+  const [showMenu, setShowMenu] = useState(false);
+  const currentHalf = useMatchStore((state) => state.currentHalf);
+  const elapsedSeconds = useMatchStore((state) => state.elapsedSeconds);
+  const isRunning = useMatchStore((state) => state.isRunning);
+  const halfDuration = useMatchStore((state) => state.halfDuration);
+  const toggleTimer = useMatchStore((state) => state.toggleTimer);
+  const nextHalf = useMatchStore((state) => state.nextHalf);
+  const undo = useMatchStore((state) => state.undo);
+  const endMatch = useMatchStore((state) => state.endMatch);
+  const competition = useMatchStore((state) => state.competition);
+  const venue = useMatchStore((state) => state.venue);
+
+  const isOvertime = elapsedSeconds > halfDuration;
+
+  return (
+    <div className="sticky top-0 bg-zinc-900/95 backdrop-blur-sm z-40 border-y-4 border-white py-3">
+      {/* Optional match info */}
+      {(competition || venue) && (
+        <div className="text-center text-zinc-400 text-xs font-bold mb-2 px-4">
+          {competition && <span>{competition}</span>}
+          {competition && venue && <span className="mx-2">•</span>}
+          {venue && <span>{venue}</span>}
+        </div>
+      )}
+      
+      <div className="flex items-center justify-between px-4">
+        {/* Undo */}
+        <button
+          onClick={undo}
+          className="bg-zinc-800 text-white font-black text-sm px-4 py-3 rounded-lg
+                     active:bg-zinc-700 active:scale-95 transition-all shadow-lg"
+        >
+          ↶ UNDO
+        </button>
+
+        {/* Timer */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={toggleTimer}
+            className={`${isRunning ? 'bg-red-600' : 'bg-green-600'} 
+                       text-white font-black px-6 py-3 rounded-lg
+                       active:scale-95 transition-all shadow-lg`}
+          >
+            {isRunning ? '⏸' : '▶'}
+          </button>
+          
+          <div className="text-center">
+            <div className="text-white font-black text-xs opacity-60">
+              HALF {currentHalf}
+            </div>
+            <div className={`font-black text-2xl tracking-tighter ${isOvertime ? 'text-red-400' : 'text-white'}`}>
+              {formatTime(elapsedSeconds)}
+              {isOvertime && <span className="text-red-400 text-sm ml-1">+{formatTime(elapsedSeconds - halfDuration)}</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* Menu */}
+        <button
+          onClick={() => setShowMenu(true)}
+          className="bg-zinc-800 text-white font-black text-sm px-4 py-3 rounded-lg
+                     active:bg-zinc-700 active:scale-95 transition-all shadow-lg"
+        >
+          ⋯
+        </button>
+      </div>
+
+      {/* Menu Modal */}
+      {showMenu && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 rounded-2xl p-6 w-full max-w-sm border-4 border-white">
+            <h3 className="text-white font-black text-2xl mb-6">MATCH CONTROLS</h3>
+            
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  nextHalf();
+                  setShowMenu(false);
+                }}
+                className="w-full bg-blue-600 text-white font-black p-4 rounded-lg active:bg-blue-700"
+              >
+                NEXT HALF
+              </button>
+              
+              <button
+                onClick={() => {
+                  if (confirm('End match and return to setup? Current match data will be cleared.')) {
+                    endMatch();
+                    setShowMenu(false);
+                  }
+                }}
+                className="w-full bg-red-600 text-white font-black p-4 rounded-lg active:bg-red-700"
+              >
+                END MATCH
+              </button>
+              
+              <button
+                onClick={() => setShowMenu(false)}
+                className="w-full bg-zinc-700 text-white font-black p-4 rounded-lg active:bg-zinc-600"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const EventLog: React.FC = () => {
+  const [showLog, setShowLog] = useState(false);
+  const scoreEvents = useMatchStore((state) => state.scoreEvents);
+  const cards = useMatchStore((state) => state.cards);
+  const homeTeam = useMatchStore((state) => state.homeTeam);
+  const awayTeam = useMatchStore((state) => state.awayTeam);
+
+  const allEvents = [...scoreEvents, ...cards]
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  return (
+    <>
+      <button
+        onClick={() => setShowLog(true)}
+        className="fixed bottom-4 right-4 bg-zinc-800 text-white font-black text-sm px-5 py-3 rounded-full
+                   shadow-2xl active:scale-95 transition-all z-30 border-2 border-white"
+      >
+        📋 LOG ({allEvents.length})
+      </button>
+
+      {showLog && (
+        <div className="fixed inset-0 bg-black/95 z-50 overflow-auto">
+          <div className="p-4">
+            <div className="flex justify-between items-center mb-6 sticky top-0 bg-black py-4">
+              <h2 className="text-white font-black text-3xl">MATCH LOG</h2>
+              <button
+                onClick={() => setShowLog(false)}
+                className="bg-zinc-800 text-white font-black px-4 py-2 rounded-lg"
+              >
+                CLOSE
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {allEvents.map((event) => {
+                const isScore = 'points' in event;
+                const teamName = event.team === 'home' ? homeTeam : awayTeam;
+                
+                return (
+                  <div
+                    key={event.id}
+                    className="bg-zinc-900 border-l-4 border-white p-4 rounded-lg"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="text-white font-black text-lg">
+                          {teamName}
+                          {event.player && ` #${event.player}`}
+                        </div>
+                        <div className="text-zinc-400 font-bold text-sm">
+                          {isScore ? (
+                            <>
+                              {(event as ScoreEvent).type.toUpperCase()} 
+                              <span className="text-green-400 ml-2">+{(event as ScoreEvent).points}</span>
+                            </>
+                          ) : (
+                            <span className={(event as Card).type === 'yellow' ? 'text-yellow-400' : 'text-red-400'}>
+                              {(event as Card).type.toUpperCase()} CARD
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-zinc-500 text-sm font-bold text-right">
+                        H{event.half}<br/>{event.minute}'
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {allEvents.length === 0 && (
+                <div className="text-zinc-600 text-center py-12 font-bold">
+                  No events yet
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// Main App
+const App: React.FC = () => {
+  useTimer();
+  const matchStarted = useMatchStore((state) => state.matchStarted);
+
+  if (!matchStarted) {
+    return <GameSetup />;
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white overflow-hidden">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Roboto+Condensed:wght@400;700;900&display=swap');
+        
+        * {
+          font-family: 'Roboto Condensed', sans-serif;
+        }
+        
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        
+        input[type="number"] {
+          -moz-appearance: textfield;
+        }
+
+        /* Prevent zoom on input focus (iOS) */
+        input {
+          font-size: 16px;
+        }
+        
+        /* Smooth transitions */
+        * {
+          -webkit-tap-highlight-color: transparent;
+        }
+      `}</style>
+
+      <div className="max-w-2xl mx-auto">
+        {/* Away Team (Top) */}
+        <div className="bg-gradient-to-b from-zinc-900 to-zinc-950 p-4">
+          <TeamSection team="away" isTop />
+        </div>
+
+        {/* Controls */}
+        <MatchControls />
+
+        {/* Home Team (Bottom) */}
+        <div className="bg-gradient-to-t from-zinc-900 to-zinc-950 p-4">
+          <TeamSection team="home" />
+        </div>
+      </div>
+
+      {/* Event Log */}
+      <EventLog />
+    </div>
+  );
+};
+
+export default App;
