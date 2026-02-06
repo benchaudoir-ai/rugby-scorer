@@ -21,7 +21,8 @@ import {
   MultiSelect,
   TextInput,
 } from '@mantine/core';
-import { IconArrowLeft, IconHome, IconCalendar, IconUsers, IconList } from '@tabler/icons-react';
+import { useMediaQuery } from '@mantine/hooks';
+import { IconArrowLeft, IconHome, IconCalendar, IconUsers, IconList, IconShare, IconHelp } from '@tabler/icons-react';
 import { getTeams, addTeam, updateTeam, getTeamColors } from './db/teams';
 import { getPlayersByTeam, addPlayer as dbAddPlayer, updatePlayer as dbUpdatePlayer, deletePlayer as dbDeletePlayer } from './db/players';
 import { saveFinishedMatch, stateToMatchSnapshot, listMatches, getMatch, saveScheduledMatch, updateMatch } from './db/matches';
@@ -38,6 +39,14 @@ interface Player {
   position: string;
   isStarter: boolean;
   team: 'home' | 'away';
+}
+
+/** One slot in the Select Team wizard lineup (1–15 + subs). playerId absent = placeholder, no DB stats. */
+export interface LineupSlot {
+  number: number;
+  position: string;
+  playerId?: string;
+  name: string;
 }
 
 interface ScoreEvent {
@@ -130,6 +139,7 @@ interface MatchState extends MatchConfig {
 // Zustand Store with full persistence
 const useMatchStore = create<MatchState & {
   addScore: (team: 'home' | 'away', type: ScoreEvent['type'], player?: string, pending?: boolean) => void;
+  addMissedKick: (team: 'home' | 'away', type: 'conversion' | 'penalty' | 'drop-goal', player?: string) => void;
   addCard: (team: 'home' | 'away', player: string, type: 'yellow' | 'red') => void;
   addPlayer: (player: Omit<Player, 'id'>) => void;
   setPlayers: (players: Player[]) => void;
@@ -331,6 +341,23 @@ const useMatchStore = create<MatchState & {
         if ('vibrate' in navigator) {
           navigator.vibrate(pending ? 100 : 50);
         }
+      },
+
+      addMissedKick: (team, type, player) => {
+        const state = get();
+        const event: ScoreEvent = {
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          team,
+          type,
+          points: 0,
+          player,
+          half: state.currentHalf,
+          minute: Math.floor(state.elapsedSeconds / 60),
+          matchTime: state.elapsedSeconds,
+        };
+        set({ scoreEvents: [...state.scoreEvents, event] });
+        if ('vibrate' in navigator) navigator.vibrate(30);
       },
 
       addCard: (team, player, type) => {
@@ -655,21 +682,28 @@ const NAV_ITEMS: { view: AppView; label: string; icon: React.ReactNode }[] = [
   { view: 'matches', label: 'Matches', icon: <IconList size={22} /> },
 ];
 
+const HEADER_BG = '#34e5eb';
+const HEADER_TEXT = '#0f172a';
+
 // Layout wrapper: AppShell with header + bottom nav (mobile-first, touch-friendly)
 const ShellLayout: React.FC<{
   view: AppView;
   setView: (v: AppView) => void;
   children: React.ReactNode;
-}> = ({ view, setView, children }) => (
+}> = ({ view, setView, children }) => {
+  const [helpOpened, setHelpOpened] = useState(false);
+  const smallNav = useMediaQuery('(max-width: 420px)');
+  return (
   <AppShell
     header={{ height: 56 }}
     footer={{ height: 64 }}
     padding="md"
     styles={{
       main: { paddingBottom: 80, minHeight: '100vh' },
+      header: { background: HEADER_BG },
     }}
   >
-    <AppShellHeader>
+    <AppShellHeader style={{ background: HEADER_BG }}>
       <Group h="100%" px="md" justify="space-between">
         {view !== 'home' ? (
           <ActionIcon
@@ -677,18 +711,42 @@ const ShellLayout: React.FC<{
             size="lg"
             onClick={() => setView('home')}
             aria-label="Back to home"
+            style={{ color: HEADER_TEXT }}
           >
             <IconArrowLeft size={24} />
           </ActionIcon>
         ) : (
           <Box />
         )}
-        <Title order={4} style={{ flex: 1, textAlign: 'center' }}>
-          Rugby Scorer
+        <Title order={4} style={{ flex: 1, textAlign: 'center', color: HEADER_TEXT }}>
+          ❤️ Sarah's Scorer ❤️
         </Title>
-        <Box w={40} />
+        <ActionIcon
+          variant="subtle"
+          size="lg"
+          onClick={() => setHelpOpened(true)}
+          aria-label="Help"
+          style={{ color: HEADER_TEXT }}
+        >
+          <IconHelp size={24} />
+        </ActionIcon>
       </Group>
     </AppShellHeader>
+    <Modal opened={helpOpened} onClose={() => setHelpOpened(false)} title="Help" centered>
+      <Stack gap="md">
+        <Text size="sm" c="dimmed">Open the admin screen to manage data, add demo content, or reset the app.</Text>
+        <Button
+          variant="light"
+          fullWidth
+          onClick={() => {
+            setHelpOpened(false);
+            window.location.href = '/admin';
+          }}
+        >
+          Go to Admin
+        </Button>
+      </Stack>
+    </Modal>
     <AppShellMain>{children}</AppShellMain>
     <AppShellFooter>
       <Group justify="space-around" h="100%" px="xs" gap="xs">
@@ -697,17 +755,19 @@ const ShellLayout: React.FC<{
             key={v}
             variant={view === v ? 'filled' : 'subtle'}
             size="md"
-            leftSection={icon}
+            leftSection={smallNav ? undefined : icon}
             onClick={() => setView(v)}
             style={{ flex: 1, minWidth: 0 }}
+            aria-label={label}
           >
-            {label}
+            {smallNav ? icon : label}
           </Button>
         ))}
       </Group>
     </AppShellFooter>
   </AppShell>
-);
+  );
+};
 
 // Home / Start page – Mantine UI–inspired hero + workflow cards
 const HomePage: React.FC<{ onNavigate: (view: AppView) => void }> = ({ onNavigate }) => (
@@ -795,6 +855,473 @@ const HomePage: React.FC<{ onNavigate: (view: AppView) => void }> = ({ onNavigat
   </Box>
 );
 
+// Select Team Wizard (game setup): pre-fill source → pitch grid → slot editor
+const SelectTeamWizard: React.FC<{
+  team: 'home' | 'away';
+  teamId: string;
+  teamName: string;
+  teamColor: string;
+  rosterOptions: Array<{ id: string; name: string }>;
+  teamPlayers: DbPlayer[];
+  currentLineup: LineupSlot[] | null;
+  onSave: (lineup: LineupSlot[]) => void;
+  onClose: () => void;
+}> = ({ teamId, teamName, teamColor, rosterOptions, teamPlayers, currentLineup, onSave, onClose }) => {
+  const defaultSubsCount = 8;
+  const [step, setStep] = useState<'source' | 'grid'>('source');
+  const [sourceChoice, setSourceChoice] = useState<'players' | 'roster' | 'default' | null>(null);
+  const [selectedRosterIdForWizard, setSelectedRosterIdForWizard] = useState<string>('');
+  const [subsCount, setSubsCount] = useState(defaultSubsCount);
+  const [slots, setSlots] = useState<LineupSlot[]>(() => {
+    if (currentLineup && currentLineup.length >= 15) {
+      const subSlots = currentLineup.filter((s) => s.number > 15);
+      return currentLineup;
+    }
+    return [];
+  });
+  const [editingSlot, setEditingSlot] = useState<number | null>(null);
+  const [saveAsRosterName, setSaveAsRosterName] = useState('');
+  const [showSaveAsRoster, setShowSaveAsRoster] = useState(false);
+
+  const totalSlots = 15 + subsCount;
+  const getSlot = (num: number) => slots.find((s) => s.number === num);
+  const setSlot = (num: number, slot: LineupSlot) => {
+    setSlots((prev) => {
+      const next = prev.filter((s) => s.number !== num);
+      next.push(slot);
+      next.sort((a, b) => a.number - b.number);
+      return next;
+    });
+  };
+
+  const buildSlotsFromPlayers = () => {
+    const sorted = [...teamPlayers].sort((a, b) => a.number - b.number);
+    const result: LineupSlot[] = [];
+    for (let n = 1; n <= 15; n++) {
+      const p = sorted[n - 1];
+      result.push({
+        number: n,
+        position: DEFAULT_PLAYER_POSITIONS[n - 1] ?? 'Sub',
+        playerId: p?.id,
+        name: p?.name ?? `Player ${n}`,
+      });
+    }
+    for (let n = 16; n <= 15 + defaultSubsCount; n++) {
+      const p = sorted[15 + (n - 16)];
+      result.push({
+        number: n,
+        position: 'Sub',
+        playerId: p?.id,
+        name: p?.name ?? `Player ${n}`,
+      });
+    }
+    return result;
+  };
+
+  const buildSlotsFromRoster = async (rosterId: string) => {
+    const entries = await getRosterEntries(rosterId);
+    const result: LineupSlot[] = [];
+    for (let n = 1; n <= 15 + defaultSubsCount; n++) {
+      const entry = entries.find((e) => e.number === n);
+      const p = entry?.playerId ? await getPlayer(entry.playerId) : undefined;
+      const usePlayer = p && (p as DbPlayer & { active?: boolean }).active !== false;
+      result.push({
+        number: n,
+        position: entry?.position ?? (DEFAULT_PLAYER_POSITIONS[n - 1] ?? 'Sub'),
+        playerId: usePlayer ? p!.id : undefined,
+        name: usePlayer ? p!.name : `Player ${n}`,
+      });
+    }
+    return result;
+  };
+
+  const buildSlotsDefault = () => {
+    const result: LineupSlot[] = [];
+    for (let n = 1; n <= 15 + defaultSubsCount; n++) {
+      result.push({
+        number: n,
+        position: DEFAULT_PLAYER_POSITIONS[n - 1] ?? 'Sub',
+        name: `Player ${n}`,
+      });
+    }
+    return result;
+  };
+
+  const handleFill = async () => {
+    if (sourceChoice === 'players') {
+      setSlots(buildSlotsFromPlayers());
+      setSubsCount(defaultSubsCount);
+    } else if (sourceChoice === 'roster' && selectedRosterIdForWizard) {
+      const built = await buildSlotsFromRoster(selectedRosterIdForWizard);
+      setSlots(built);
+      setSubsCount(defaultSubsCount);
+    } else if (sourceChoice === 'default') {
+      setSlots(buildSlotsDefault());
+      setSubsCount(defaultSubsCount);
+    }
+    setStep('grid');
+  };
+
+  const handleReset = () => {
+    setStep('source');
+    setSourceChoice(null);
+    setSelectedRosterIdForWizard('');
+    setSlots([]);
+  };
+
+  const ensureSlotsForSubs = () => {
+    const maxNum = 15 + subsCount;
+    setSlots((prev) => {
+      const next = [...prev];
+      for (let n = 1; n <= maxNum; n++) {
+        if (!next.some((s) => s.number === n)) {
+          next.push({
+            number: n,
+            position: n <= 15 ? (DEFAULT_PLAYER_POSITIONS[n - 1] ?? 'Sub') : 'Sub',
+            name: `Player ${n}`,
+          });
+        }
+      }
+      return next.filter((s) => s.number <= maxNum).sort((a, b) => a.number - b.number);
+    });
+  };
+
+  const handleDone = () => {
+    const existingByNumber = new Map(slots.map((s) => [s.number, s]));
+    const final: LineupSlot[] = [];
+    for (let n = 1; n <= 15 + subsCount; n++) {
+      const s = existingByNumber.get(n);
+      final.push(
+        s ?? {
+          number: n,
+          position: DEFAULT_PLAYER_POSITIONS[n - 1] ?? 'Sub',
+          name: `Player ${n}`,
+        }
+      );
+    }
+    onSave(final);
+    onClose();
+  };
+
+  const handleSaveAsRoster = async () => {
+    if (!saveAsRosterName.trim()) return;
+    ensureSlotsForSubs();
+    const rosterId = await createRoster(teamId, saveAsRosterName.trim());
+    const entries = await getRosterEntries(rosterId);
+    const playerByNumber = new Map(slots.map((s) => [s.number, s]));
+    for (const entry of entries) {
+      const slot = playerByNumber.get(entry.number);
+      if (slot?.playerId) await updateRosterEntry(entry.id, { playerId: slot.playerId });
+    }
+    setShowSaveAsRoster(false);
+    setSaveAsRosterName('');
+  };
+
+  // Step 1: Choose pre-fill source
+  const sourceStep = (
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">Pre-populate the team with:</Text>
+      <Button variant="light" color="blue" fullWidth onClick={() => { setSourceChoice('players'); }} style={{ justifyContent: 'flex-start' }}>
+        1. Players in the team {teamPlayers.length > 0 ? `(${teamPlayers.length})` : '(none)'}
+      </Button>
+      <Button variant="light" color="violet" fullWidth onClick={() => setSourceChoice('roster')} style={{ justifyContent: 'flex-start' }}>
+        2. A roster
+      </Button>
+      {sourceChoice === 'roster' && (
+        <select
+          value={selectedRosterIdForWizard}
+          onChange={(e) => setSelectedRosterIdForWizard(e.target.value)}
+          className="w-full bg-zinc-800 text-white p-3 rounded-lg font-bold"
+        >
+          <option value="">Select roster…</option>
+          {rosterOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      )}
+      <Button variant="light" color="gray" fullWidth onClick={() => setSourceChoice('default')} style={{ justifyContent: 'flex-start' }}>
+        3. Default players (Player 1, Player 2… — not saved to DB, game log only)
+      </Button>
+      <Group mt="md">
+        <Button variant="default" onClick={onClose}>Cancel</Button>
+        <Button
+          color="green"
+          onClick={handleFill}
+          disabled={
+            sourceChoice === null ||
+            (sourceChoice === 'roster' && !selectedRosterIdForWizard) ||
+            (sourceChoice === 'players' && teamPlayers.length === 0)
+          }
+        >
+          Fill & continue
+        </Button>
+      </Group>
+    </Stack>
+  );
+
+  // Step 2: Pitch grid
+  const slotNumbers = (() => {
+    const out: number[] = [];
+    PITCH_ROWS.forEach((row) => row.forEach((n) => out.push(n)));
+    for (let n = 16; n <= 15 + subsCount; n++) out.push(n);
+    return out;
+  })();
+
+  const gridStep = (
+    <Box>
+      <Group justify="space-between" mb="sm">
+        <Text size="sm" fw={700}>Subs</Text>
+        <Group gap="xs">
+          <Button variant="subtle" size="xs" onClick={() => setSubsCount((c) => Math.max(0, c - 1))}>−</Button>
+          <Text span fw={700}>{subsCount}</Text>
+          <Button variant="subtle" size="xs" onClick={() => setSubsCount((c) => Math.min(15, c + 1))}>+</Button>
+        </Group>
+      </Group>
+      <Box
+        style={{
+          background: 'linear-gradient(180deg, #14532d 0%, #166534 50%, #14532d 100%)',
+          borderRadius: 12,
+          padding: 12,
+          minHeight: 320,
+        }}
+      >
+        {PITCH_ROWS.map((row, rowIdx) => (
+          <Group key={rowIdx} justify="center" gap="xs" mb="xs">
+            {row.map((num) => {
+              const slot = getSlot(num);
+              return (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => setEditingSlot(num)}
+                  style={{
+                    width: 56,
+                    minHeight: 48,
+                    borderRadius: 8,
+                    backgroundColor: teamColor,
+                    color: getContrastTextColor(teamColor),
+                    border: '2px solid rgba(255,255,255,0.4)',
+                    fontWeight: 700,
+                    fontSize: 11,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <span>{num}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{slot?.name ?? '—'}</span>
+                </button>
+              );
+            })}
+          </Group>
+        ))}
+        <Group justify="center" gap="xs" mt="sm">
+          {Array.from({ length: subsCount }, (_, i) => 16 + i).map((num) => {
+            const subSlot = getSlot(num);
+            return (
+              <button
+                key={num}
+                type="button"
+                onClick={() => setEditingSlot(num)}
+                style={{
+                  width: 56,
+                  minHeight: 44,
+                  borderRadius: 6,
+                  backgroundColor: teamColor,
+                  color: getContrastTextColor(teamColor),
+                  border: '2px solid rgba(255,255,255,0.4)',
+                  fontWeight: 700,
+                  fontSize: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <span>{num}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{subSlot?.name ?? '—'}</span>
+              </button>
+            );
+          })}
+        </Group>
+      </Box>
+      <Group mt="md" justify="space-between">
+        <Button variant="subtle" color="gray" size="sm" onClick={handleReset}>Reset</Button>
+        <Group>
+          <Button variant="light" size="sm" onClick={() => setShowSaveAsRoster(true)}>Save as roster</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button color="green" onClick={handleDone}>Done</Button>
+        </Group>
+      </Group>
+    </Box>
+  );
+
+  return (
+    <Modal opened size="lg" title={`Select team — ${teamName}`} onClose={onClose} centered>
+      {step === 'source' ? sourceStep : gridStep}
+      {showSaveAsRoster && (
+        <Modal opened title="Save as roster" onClose={() => setShowSaveAsRoster(false)} centered>
+          <TextInput label="Roster name" value={saveAsRosterName} onChange={(e) => setSaveAsRosterName(e.target.value)} placeholder="e.g. First XV" mb="md" />
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setShowSaveAsRoster(false)}>Cancel</Button>
+            <Button color="green" onClick={handleSaveAsRoster} disabled={!saveAsRosterName.trim()}>Save</Button>
+          </Group>
+        </Modal>
+      )}
+      {editingSlot !== null && (
+        <SlotEditorModal
+          slotNumber={editingSlot}
+          slot={getSlot(editingSlot)}
+          teamId={teamId}
+          teamColor={teamColor}
+          teamPlayers={teamPlayers}
+          allSlots={slots}
+          onAssign={(primary, secondary) => {
+            if (secondary) {
+              setSlot(editingSlot, primary);
+              setSlot(secondary.number, secondary);
+            } else {
+              setSlots((prev) => {
+                let next = prev.filter((s) => s.number !== editingSlot);
+                next.push(primary);
+                const prevSlot = prev.find((s) => s.playerId === primary.playerId && s.number !== editingSlot);
+                if (prevSlot) {
+                  next = next.filter((s) => s.number !== prevSlot.number);
+                  next.push({
+                    number: prevSlot.number,
+                    position: prevSlot.number <= 15 ? (DEFAULT_PLAYER_POSITIONS[prevSlot.number - 1] ?? 'Sub') : 'Sub',
+                    name: `Player ${prevSlot.number}`,
+                  });
+                }
+                next.sort((a, b) => a.number - b.number);
+                return next;
+              });
+            }
+            setEditingSlot(null);
+          }}
+          onClose={() => setEditingSlot(null)}
+        />
+      )}
+    </Modal>
+  );
+};
+
+// Slot editor: select existing player (move/swap) or add new player
+const SlotEditorModal: React.FC<{
+  slotNumber: number;
+  slot: LineupSlot | undefined;
+  teamId: string;
+  teamColor: string;
+  teamPlayers: DbPlayer[];
+  allSlots: LineupSlot[];
+  onAssign: (primary: LineupSlot, secondary?: LineupSlot) => void;
+  onClose: () => void;
+}> = ({ slotNumber, slot, teamId, teamColor, teamPlayers, allSlots, onAssign, onClose }) => {
+  const [mode, setMode] = useState<'select' | 'add'>('select');
+  const [newPlayerForm, setNewPlayerForm] = useState({ name: '', number: String(slotNumber), position: DEFAULT_PLAYER_POSITIONS[slotNumber - 1] ?? 'Sub' });
+
+  const usedPlayerIds = new Set(allSlots.filter((s) => s.playerId && s.number !== slotNumber).map((s) => s.playerId!));
+  const notPicked = teamPlayers.filter((p) => !usedPlayerIds.has(p.id));
+  const inLineup = teamPlayers.filter((p) => usedPlayerIds.has(p.id));
+
+  const positionFor = (num: number) => (num <= 15 ? (DEFAULT_PLAYER_POSITIONS[num - 1] ?? 'Sub') : 'Sub');
+
+  const handleSelectPlayer = (player: DbPlayer, doSwap: boolean) => {
+    const primary: LineupSlot = { number: slotNumber, position: positionFor(slotNumber), playerId: player.id, name: player.name };
+    const sourceSlot = allSlots.find((s) => s.playerId === player.id && s.number !== slotNumber);
+    if (doSwap && sourceSlot && slot?.playerId) {
+      const secondary: LineupSlot = {
+        number: sourceSlot.number,
+        position: positionFor(sourceSlot.number),
+        playerId: slot.playerId,
+        name: slot.name,
+      };
+      onAssign(primary, secondary);
+    } else {
+      onAssign(primary);
+    }
+    onClose();
+  };
+
+  const handleAddNew = async () => {
+    if (!newPlayerForm.name.trim()) return;
+    const num = parseInt(newPlayerForm.number, 10) || slotNumber;
+    const id = await dbAddPlayer({
+      teamId,
+      name: newPlayerForm.name.trim(),
+      number: num,
+      position: newPlayerForm.position,
+      isStarter: slotNumber <= 15,
+    });
+    const position = slotNumber <= 15 ? (DEFAULT_PLAYER_POSITIONS[slotNumber - 1] ?? 'Sub') : 'Sub';
+    onAssign({ number: slotNumber, position, playerId: id, name: newPlayerForm.name.trim() });
+    onClose();
+  };
+
+  const handleClear = () => {
+    const position = slotNumber <= 15 ? (DEFAULT_PLAYER_POSITIONS[slotNumber - 1] ?? 'Sub') : 'Sub';
+    onAssign({ number: slotNumber, position, name: `Player ${slotNumber}` });
+    onClose();
+  };
+
+  const renderPlayerRow = (p: DbPlayer) => {
+    const inOtherSlot = allSlots.find((s) => s.playerId === p.id && s.number !== slotNumber);
+    return (
+      <Group key={p.id} justify="space-between" mb="xs">
+        <Text size="sm" fw={700}>{p.name} #{p.number}</Text>
+        <Group gap="xs">
+          <Button size="xs" variant="light" onClick={() => handleSelectPlayer(p, false)}>Move here</Button>
+          {inOtherSlot && slot?.playerId && <Button size="xs" variant="subtle" onClick={() => handleSelectPlayer(p, true)}>Swap</Button>}
+        </Group>
+      </Group>
+    );
+  };
+
+  return (
+    <Modal opened title={`Slot ${slotNumber}`} onClose={onClose} centered size="sm">
+      {mode === 'select' ? (
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">Assign a player from the team, or add new. All team players are available.</Text>
+          <ScrollArea h={280}>
+            {notPicked.length > 0 && (
+              <>
+                <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb="xs">Not in lineup</Text>
+                {notPicked.map(renderPlayerRow)}
+              </>
+            )}
+            {inLineup.length > 0 && (
+              <>
+                <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb="xs" mt={notPicked.length > 0 ? 'md' : undefined}>In lineup (move or swap)</Text>
+                {inLineup.map(renderPlayerRow)}
+              </>
+            )}
+            {notPicked.length === 0 && inLineup.length === 0 && (
+              <Text size="sm" c="dimmed">No players in team yet. Add one below.</Text>
+            )}
+          </ScrollArea>
+          <Button variant="light" fullWidth onClick={() => setMode('add')}>+ Add new player to team</Button>
+          <Button variant="subtle" color="gray" fullWidth onClick={handleClear}>Clear (use default name)</Button>
+        </Stack>
+      ) : (
+        <Stack gap="sm">
+          <TextInput label="Name" value={newPlayerForm.name} onChange={(e) => setNewPlayerForm((f) => ({ ...f, name: e.target.value }))} placeholder="Player name" />
+          <TextInput label="Number" value={newPlayerForm.number} onChange={(e) => setNewPlayerForm((f) => ({ ...f, number: e.target.value }))} type="number" min={1} max={23} />
+          <select
+            value={newPlayerForm.position}
+            onChange={(e) => setNewPlayerForm((f) => ({ ...f, position: e.target.value }))}
+            className="w-full bg-zinc-800 text-white p-2 rounded-lg font-bold"
+          >
+            {PLAYER_POSITION_OPTIONS.map((pos) => <option key={pos} value={pos}>{pos}</option>)}
+          </select>
+          <Group>
+            <Button variant="default" onClick={() => setMode('select')}>Back</Button>
+            <Button color="green" onClick={handleAddNew} disabled={!newPlayerForm.name.trim()}>Add & assign</Button>
+          </Group>
+        </Stack>
+      )}
+    </Modal>
+  );
+};
+
 // Game Setup Screen
 const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => void }> = ({ onNavigate }) => {
   const config = useMatchStore();
@@ -820,6 +1347,16 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
   const [addTeamFor, setAddTeamFor] = useState<'home' | 'away' | null>(null);
   const [newTeamForm, setNewTeamForm] = useState({ name: '', color: '#3b82f6' });
   const setCurrentMatchId = useMatchStore((s) => s.setCurrentMatchId);
+  const [showSelectTeamWizard, setShowSelectTeamWizard] = useState<'home' | 'away' | null>(null);
+  const [homeCustomLineup, setHomeCustomLineup] = useState<LineupSlot[] | null>(null);
+  const [awayCustomLineup, setAwayCustomLineup] = useState<LineupSlot[] | null>(null);
+  const [homePlayersForWizard, setHomePlayersForWizard] = useState<DbPlayer[]>([]);
+  const [awayPlayersForWizard, setAwayPlayersForWizard] = useState<DbPlayer[]>([]);
+
+  // Reset advanced meta (competition, venue, referee) to blank for each new game setup
+  useEffect(() => {
+    updateConfig({ competition: '', venue: '', referee: '' });
+  }, []);
 
   const handleCreateTeamFromSetup = async () => {
     if (!newTeamForm.name.trim() || !addTeamFor) return;
@@ -849,6 +1386,22 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
     getTeams().then(setSetupTeams);
   }, []);
 
+  // Load team players for Select Team wizard
+  useEffect(() => {
+    if (!homeTeamId) {
+      setHomePlayersForWizard([]);
+      return;
+    }
+    getPlayersByTeam(homeTeamId).then(setHomePlayersForWizard);
+  }, [homeTeamId]);
+  useEffect(() => {
+    if (!awayTeamId) {
+      setAwayPlayersForWizard([]);
+      return;
+    }
+    getPlayersByTeam(awayTeamId).then(setAwayPlayersForWizard);
+  }, [awayTeamId]);
+
   // Sync config when home/away team or colours change
   useEffect(() => {
     if (selectedHomeTeam) {
@@ -861,7 +1414,7 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
     }
   }, [selectedHomeTeam?.id, selectedAwayTeam?.id, homeColors.join(','), awayColors.join(',')]);
 
-  // Load roster options for both teams and players (from rosters or team pool)
+  // Load roster options for both teams and players (from custom lineup, rosters, or team pool)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -875,7 +1428,16 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
       setRosterOptions(homeRosters.map((r) => ({ id: r.id, name: r.name })));
       setAwayRosterOptions(awayRosters.map((r) => ({ id: r.id, name: r.name })));
       let homeMapped: Player[];
-      if (selectedRosterId && homeRosters.some((r) => r.id === selectedRosterId)) {
+      if (homeCustomLineup && homeCustomLineup.length >= 15) {
+        homeMapped = homeCustomLineup.map((s) => ({
+          id: s.playerId ?? `placeholder-home-${s.number}`,
+          number: s.number,
+          name: s.name,
+          position: s.position,
+          isStarter: s.number <= 15,
+          team: 'home' as const,
+        }));
+      } else if (selectedRosterId && homeRosters.some((r) => r.id === selectedRosterId)) {
         const entries = await getRosterEntries(selectedRosterId);
         if (cancelled) return;
         homeMapped = await Promise.all(
@@ -903,7 +1465,16 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
         }));
       }
       let awayMapped: Player[];
-      if (selectedAwayRosterId && awayRosters.some((r) => r.id === selectedAwayRosterId)) {
+      if (awayCustomLineup && awayCustomLineup.length >= 15) {
+        awayMapped = awayCustomLineup.map((s) => ({
+          id: s.playerId ?? `placeholder-away-${s.number}`,
+          number: s.number,
+          name: s.name,
+          position: s.position,
+          isStarter: s.number <= 15,
+          team: 'away' as const,
+        }));
+      } else if (selectedAwayRosterId && awayRosters.some((r) => r.id === selectedAwayRosterId)) {
         const entries = await getRosterEntries(selectedAwayRosterId);
         if (cancelled) return;
         awayMapped = await Promise.all(
@@ -933,7 +1504,7 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
       setPlayers([...homeMapped, ...awayMapped]);
     })();
     return () => { cancelled = true; };
-  }, [homeTeamId, awayTeamId, selectedRosterId, selectedAwayRosterId, updateConfig, setPlayers]);
+  }, [homeTeamId, awayTeamId, selectedRosterId, selectedAwayRosterId, homeCustomLineup, awayCustomLineup, updateConfig, setPlayers]);
 
   useEffect(() => {
     loadScheduledMatches();
@@ -1195,117 +1766,123 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
 
         <Card shadow="sm" padding="lg" radius="md" withBorder>
           <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Home Team</Text>
-          <select
-            value={homeTeamId}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === '__new__') {
-                setAddTeamFor('home');
-                setShowAddTeamModal(true);
-                return;
-              }
-              setHomeTeamId(v);
-              setIsDirty(true);
-            }}
-            className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">Select team…</option>
-            {setupTeams.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-            <option value="__new__">+ Create new team</option>
-          </select>
+          <Group align="flex-end" gap="sm">
+            <select
+              value={homeTeamId}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '__new__') {
+                  setAddTeamFor('home');
+                  setShowAddTeamModal(true);
+                  return;
+                }
+                setHomeTeamId(v);
+                setHomeCustomLineup(null);
+                setIsDirty(true);
+              }}
+              className="flex-1 min-w-0 bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-blue-500 focus:outline-none"
+            >
+              <option value="">Select team…</option>
+              {setupTeams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+              <option value="__new__">+ Create new team</option>
+            </select>
+            <Button
+              variant="light"
+              color="blue"
+              onClick={() => setShowSelectTeamWizard('home')}
+              disabled={!homeTeamId}
+              title="Select team lineup (15 + subs)"
+            >
+              Select Team
+            </Button>
+          </Group>
           {errors.homeTeam && (
             <Text size="sm" c="red" fw={700} mt="xs">⚠ {errors.homeTeam}</Text>
           )}
 
-          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Home shirt colour</Text>
-          <div className="grid grid-cols-4 gap-3">
-            {(homeColors.length > 0 ? homeColors.map((hex) => ({ value: hex, contrast: '#fff' })) : TEAM_COLORS).map((color) => (
-              <button
-                key={color.value}
-                onClick={() => handleFieldChange('homeColor', color.value)}
-                className={`w-14 h-14 rounded-xl font-black text-sm transition-all flex items-center justify-center
-                           ${config.homeColor === color.value
-                             ? 'ring-4 ring-white scale-95'
-                             : 'ring-2 ring-zinc-800 active:scale-90'}`}
-                style={{ color: color.contrast }}
-              >
-                <ShirtIcon fill={color.value} selected={config.homeColor === color.value} />
-              </button>
-            ))}
-          </div>
+          {homeTeamId && (
+            <>
+              <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Home shirt colour</Text>
+              <div className="grid grid-cols-4 gap-3">
+                {(homeColors.length > 0 ? homeColors.map((hex) => ({ value: hex, contrast: '#fff' })) : TEAM_COLORS).map((color) => (
+                  <button
+                    key={color.value}
+                    onClick={() => handleFieldChange('homeColor', color.value)}
+                    className={`w-14 h-14 rounded-xl font-black text-sm transition-all flex items-center justify-center
+                               ${config.homeColor === color.value
+                                 ? 'ring-4 ring-white scale-95'
+                                 : 'ring-2 ring-zinc-800 active:scale-90'}`}
+                    style={{ color: color.contrast }}
+                  >
+                    <ShirtIcon fill={color.value} selected={config.homeColor === color.value} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Away team</Text>
-          <select
-            value={awayTeamId}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === '__new__') {
-                setAddTeamFor('away');
-                setShowAddTeamModal(true);
-                return;
-              }
-              setAwayTeamId(v);
-              setIsDirty(true);
-            }}
-            className="w-full bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-red-500 focus:outline-none"
-          >
-            <option value="">Select team…</option>
-            {setupTeams.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-            <option value="__new__">+ Create new team</option>
-          </select>
+          <Group align="flex-end" gap="sm">
+            <select
+              value={awayTeamId}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '__new__') {
+                  setAddTeamFor('away');
+                  setShowAddTeamModal(true);
+                  return;
+                }
+                setAwayTeamId(v);
+                setAwayCustomLineup(null);
+                setIsDirty(true);
+              }}
+              className="flex-1 min-w-0 bg-zinc-900 text-white text-2xl font-black p-5 rounded-xl border-4 border-zinc-800 focus:border-red-500 focus:outline-none"
+            >
+              <option value="">Select team…</option>
+              {setupTeams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+              <option value="__new__">+ Create new team</option>
+            </select>
+            <Button
+              variant="light"
+              color="red"
+              onClick={() => setShowSelectTeamWizard('away')}
+              disabled={!awayTeamId}
+              title="Select team lineup (15 + subs)"
+            >
+              Select Team
+            </Button>
+          </Group>
           {errors.awayTeam && (
             <Text size="sm" c="red" fw={700} mt="xs">⚠ {errors.awayTeam}</Text>
           )}
 
-          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Away shirt colour</Text>
-          <div className="grid grid-cols-4 gap-3">
-            {(awayColors.length > 0 ? awayColors.map((hex) => ({ value: hex, contrast: '#fff' })) : TEAM_COLORS).map((color) => (
-              <button
-                key={color.value}
-                onClick={() => handleFieldChange('awayColor', color.value)}
-                className={`w-14 h-14 rounded-xl font-black text-sm transition-all flex items-center justify-center
-                           ${config.awayColor === color.value
-                             ? 'ring-4 ring-white scale-95'
-                             : 'ring-2 ring-zinc-800 active:scale-90'}`}
-                style={{ color: color.contrast }}
-              >
-                <ShirtIcon fill={color.value} selected={config.awayColor === color.value} />
-              </button>
-            ))}
-          </div>
-          {errors.awayColor && (
-            <Text size="sm" c="red" fw={700} mt="xs">⚠ {errors.awayColor}</Text>
+          {awayTeamId && (
+            <>
+              <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Away shirt colour</Text>
+              <div className="grid grid-cols-4 gap-3">
+                {(awayColors.length > 0 ? awayColors.map((hex) => ({ value: hex, contrast: '#fff' })) : TEAM_COLORS).map((color) => (
+                  <button
+                    key={color.value}
+                    onClick={() => handleFieldChange('awayColor', color.value)}
+                    className={`w-14 h-14 rounded-xl font-black text-sm transition-all flex items-center justify-center
+                               ${config.awayColor === color.value
+                                 ? 'ring-4 ring-white scale-95'
+                                 : 'ring-2 ring-zinc-800 active:scale-90'}`}
+                    style={{ color: color.contrast }}
+                  >
+                    <ShirtIcon fill={color.value} selected={config.awayColor === color.value} />
+                  </button>
+                ))}
+              </div>
+              {errors.awayColor && (
+                <Text size="sm" c="red" fw={700} mt="xs">⚠ {errors.awayColor}</Text>
+              )}
+            </>
           )}
-
-          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Home roster (optional)</Text>
-          <select
-            value={selectedRosterId ?? ''}
-            onChange={(e) => { setSelectedRosterId(e.target.value || null); setIsDirty(true); }}
-            className="w-full bg-zinc-900 text-white text-lg font-bold p-4 rounded-xl border-2 border-zinc-800 focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">No roster (default &quot;Player 1&quot; … &quot;Player 23&quot;)</option>
-            {rosterOptions.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
-          <Text size="xs" c="dimmed" fw={700} mt="xs">Active players from roster overwrite default names.</Text>
-
-          <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mt="md" mb="xs">Away roster (optional)</Text>
-          <select
-            value={selectedAwayRosterId ?? ''}
-            onChange={(e) => { setSelectedAwayRosterId(e.target.value || null); setIsDirty(true); }}
-            className="w-full bg-zinc-900 text-white text-lg font-bold p-4 rounded-xl border-2 border-zinc-800 focus:border-red-500 focus:outline-none"
-          >
-            <option value="">No roster (default &quot;Player 1&quot; … &quot;Player 23&quot;)</option>
-            {awayRosterOptions.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
-          <Text size="xs" c="dimmed" fw={700} mt="xs">Active players from roster overwrite default names.</Text>
         </Card>
 
         <Card shadow="sm" padding="lg" radius="md" withBorder>
@@ -1359,12 +1936,6 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
             value={config.substitutions}
             onChange={(val) => handleFieldChange('substitutions', val)}
           />
-
-          {config.playerTracking && (
-            <Button variant="light" color="violet" fullWidth onClick={() => onNavigate('players')} mt="md">
-              Manage teams (rosters and player pool)
-            </Button>
-          )}
           </Stack>
         </Card>
 
@@ -1475,6 +2046,39 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
           </Box>
         )}
 
+        {showSelectTeamWizard === 'home' && homeTeamId && (
+          <SelectTeamWizard
+            team="home"
+            teamId={homeTeamId}
+            teamName={setupTeams.find((t) => t.id === homeTeamId)?.name ?? 'Home'}
+            teamColor={setupTeams.find((t) => t.id === homeTeamId)?.color ?? config.homeColor ?? '#3b82f6'}
+            rosterOptions={rosterOptions}
+            teamPlayers={homePlayersForWizard}
+            currentLineup={homeCustomLineup}
+            onSave={(lineup) => {
+              setHomeCustomLineup(lineup);
+              setSelectedRosterId(null);
+            }}
+            onClose={() => setShowSelectTeamWizard(null)}
+          />
+        )}
+        {showSelectTeamWizard === 'away' && awayTeamId && (
+          <SelectTeamWizard
+            team="away"
+            teamId={awayTeamId}
+            teamName={setupTeams.find((t) => t.id === awayTeamId)?.name ?? 'Away'}
+            teamColor={setupTeams.find((t) => t.id === awayTeamId)?.color ?? config.awayColor ?? '#ef4444'}
+            rosterOptions={awayRosterOptions}
+            teamPlayers={awayPlayersForWizard}
+            currentLineup={awayCustomLineup}
+            onSave={(lineup) => {
+              setAwayCustomLineup(lineup);
+              setSelectedAwayRosterId(null);
+            }}
+            onClose={() => setShowSelectTeamWizard(null)}
+          />
+        )}
+
         <Stack gap="md" pt="xl" pb={100}>
           <Button size="lg" variant="light" onClick={handleSaveMatch} fullWidth>Save match</Button>
           <Button size="xl" onClick={handleStartMatch} fullWidth>Start match →</Button>
@@ -1486,6 +2090,9 @@ const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => v
 
 // Unique positions for multi-select (flexible positions for match selection)
 const PLAYER_POSITION_OPTIONS = [...new Set(DEFAULT_PLAYER_POSITIONS)];
+
+/** Pitch display order: row 1 = 1,2,3; row 2 = 4,5; row 3 = 6,8,7; row 4 = 9,10; row 5 = 11,12,13,14; row 6 = 15; then subs */
+const PITCH_ROWS: number[][] = [[1, 2, 3], [4, 5], [6, 8, 7], [9, 10], [11, 12, 13, 14], [15]];
 
 // Shirt colours editor for a team (Manage Teams) – overlay with ShirtIcon like game setup
 const ShirtColoursEditor: React.FC<{ teamId: string; team: DbTeam; onUpdate: () => void }> = ({ teamId, team, onUpdate }) => {
@@ -1859,7 +2466,8 @@ const MatchManagementPage: React.FC<{ onBack: () => void }> = () => {
           </Card>
         ) : (
           <Card shadow="sm" padding="lg" radius="md" withBorder>
-            <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Matches</Text>
+            <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="xs">Matches</Text>
+            <Text size="xs" c="dimmed" mb="sm">Tap a row to view match details</Text>
             <ScrollArea>
               <Table withTableBorder withColumnBorders>
                 <Table.Thead>
@@ -1875,7 +2483,12 @@ const MatchManagementPage: React.FC<{ onBack: () => void }> = () => {
                 </Table.Thead>
                 <Table.Tbody>
                   {matches.map((m) => (
-                    <Table.Tr key={m.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedId(m.id)}>
+                    <Table.Tr
+                      key={m.id}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => setSelectedId(m.id)}
+                      className="hover:bg-zinc-800/50"
+                    >
                       <Table.Td fw={700}>{m.homeTeamName}</Table.Td>
                       <Table.Td ta="center" c="dimmed" fw={700}>{m.status === 'completed' ? `${m.homeScore} – ${m.awayScore}` : 'vs'}</Table.Td>
                       <Table.Td fw={700}>{m.awayTeamName}</Table.Td>
@@ -1899,82 +2512,243 @@ const MatchManagementPage: React.FC<{ onBack: () => void }> = () => {
   );
 };
 
+function getContrastTextColorForMatch(hex: string): string {
+  const h = hex.replace(/^#/, '');
+  if (h.length !== 6 && h.length !== 3) return '#000';
+  const r = h.length === 6 ? parseInt(h.slice(0, 2), 16) : parseInt(h[0] + h[0], 16);
+  const g = h.length === 6 ? parseInt(h.slice(2, 4), 16) : parseInt(h[1] + h[1], 16);
+  const b = h.length === 6 ? parseInt(h.slice(4, 6), 16) : parseInt(h[2] + h[2], 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance < 0.4 ? '#fff' : '#000';
+}
+
+const MatchLogTable: React.FC<{
+  log: LogEvent[];
+  homeTeamName: string;
+  awayTeamName: string;
+  playerNameMap: Record<string, string>;
+}> = ({ log, homeTeamName, awayTeamName, playerNameMap }) => {
+  const sorted = [...log].sort((a, b) => a.timestamp - b.timestamp);
+  const scoreAtEvent = new Map<string, string>();
+  let h = 0, a = 0;
+  for (const ev of sorted) {
+    if (ev.type === 'score' && ev.points != null && !ev.pending) {
+      if (ev.team === 'home') h += ev.points;
+      else if (ev.team === 'away') a += ev.points;
+    }
+    scoreAtEvent.set(ev.id, `${h} – ${a}`);
+  }
+  const getEventLabel = (ev: LogEvent): string => {
+    if (ev.type === 'match-start') return 'Game started';
+    if (ev.type === 'half-time') return `Half time (H${ev.half ?? 1})`;
+    if (ev.type === 'match-end') return 'Match closed';
+    if (ev.type === 'score') {
+      if ((ev.points ?? 0) === 0 && (ev.scoreType === 'conversion' || ev.scoreType === 'penalty' || ev.scoreType === 'drop-goal'))
+        return ev.scoreType === 'conversion' ? 'Conversion missed' : ev.scoreType === 'penalty' ? 'Penalty missed' : 'Drop goal missed';
+      const label = ev.scoreType === 'try' ? 'Try' : ev.scoreType === 'conversion' ? 'Conversion' : ev.scoreType === 'penalty' ? 'Penalty' : ev.scoreType === 'drop-goal' ? 'Drop goal' : ev.scoreType === 'penalty-try' ? 'Penalty try' : ev.scoreType ?? 'Score';
+      return `${label}${ev.points != null ? ` +${ev.points}` : ''}${ev.pending ? ' (TMO)' : ''}`;
+    }
+    if (ev.type === 'card') return ev.cardType === 'red' ? 'Red card' : 'Yellow card';
+    if (ev.type === 'substitution') return 'Substitution';
+    return '—';
+  };
+  const getTeamForEvent = (ev: LogEvent): string => {
+    if (ev.team === 'home') return homeTeamName;
+    if (ev.team === 'away') return awayTeamName;
+    return '—';
+  };
+  const getPlayerLabel = (ev: LogEvent): string => {
+    if (ev.type === 'substitution' && ev.offPlayerId && ev.onPlayerId) {
+      const off = playerNameMap[ev.offPlayerId];
+      const onP = playerNameMap[ev.onPlayerId];
+      return off && onP ? `${off} → ${onP}` : '—';
+    }
+    if ((ev.type === 'score' || ev.type === 'card') && ev.playerId) return playerNameMap[ev.playerId] ?? '—';
+    return '—';
+  };
+  const timeStr = (ev: LogEvent): string => {
+    if (ev.matchTime != null) return `H${ev.half ?? 1} ${formatTime(ev.matchTime)}`;
+    if (ev.half != null) return `H${ev.half}`;
+    return '—';
+  };
+  return (
+    <Table withTableBorder withColumnBorders style={{ background: 'var(--mantine-color-dark-7)' }}>
+      <Table.Thead>
+        <Table.Tr>
+          <Table.Th>Time</Table.Th>
+          <Table.Th>Team</Table.Th>
+          <Table.Th>Event</Table.Th>
+          <Table.Th>Player</Table.Th>
+          <Table.Th>Match score</Table.Th>
+        </Table.Tr>
+      </Table.Thead>
+      <Table.Tbody>
+        {sorted.map((ev) => (
+          <Table.Tr key={ev.id}>
+            <Table.Td>{timeStr(ev)}</Table.Td>
+            <Table.Td>{getTeamForEvent(ev)}</Table.Td>
+            <Table.Td>{getEventLabel(ev)}</Table.Td>
+            <Table.Td>{getPlayerLabel(ev)}</Table.Td>
+            <Table.Td>{scoreAtEvent.get(ev.id) ?? '–'}</Table.Td>
+          </Table.Tr>
+        ))}
+      </Table.Tbody>
+    </Table>
+  );
+};
+
 const MatchDetailView: React.FC<{ matchId: string; onBack: () => void }> = ({ matchId, onBack }) => {
   const [match, setMatch] = useState<DbMatch | null>(null);
+  const [playerNameMap, setPlayerNameMap] = useState<Record<string, string>>({});
   const sectionLabelStyle = { letterSpacing: '0.05em' as const };
   useEffect(() => {
     getMatch(matchId).then((m) => setMatch(m ?? null));
   }, [matchId]);
+  useEffect(() => {
+    if (!match?.log?.length) {
+      setPlayerNameMap({});
+      return;
+    }
+    const ids = new Set<string>();
+    match.log.forEach((ev) => {
+      if (ev.playerId) ids.add(ev.playerId);
+      if ('offPlayerId' in ev && ev.offPlayerId) ids.add(ev.offPlayerId);
+      if ('onPlayerId' in ev && ev.onPlayerId) ids.add(ev.onPlayerId);
+    });
+    const map: Record<string, string> = {};
+    Promise.all([...ids].map(async (id) => {
+      const p = await getPlayer(id);
+      map[id] = p?.name ?? '—';
+    })).then(() => setPlayerNameMap(map));
+  }, [match?.id, match?.log]);
+
+  const shareResult = React.useCallback(async () => {
+    if (!match) return;
+    const scoreEvents = match.log.filter((ev): ev is LogEvent & { type: 'score'; team: 'home' | 'away'; scoreType: string; matchTime?: number } => ev.type === 'score' && ev.team != null && ev.scoreType != null);
+    const playerIds = [...new Set(scoreEvents.map((e) => e.playerId).filter(Boolean))] as string[];
+    const playerNames: Record<string, string> = {};
+    await Promise.all(playerIds.map(async (id) => {
+      const p = await getPlayer(id);
+      playerNames[id] = p?.name ?? (id.startsWith('placeholder-') ? '—' : '—');
+    }));
+
+    const formatTime = (matchTime: number | undefined) => matchTime != null ? `${Math.floor(matchTime / 60)}'` : '—';
+    const section = (teamName: string, team: 'home' | 'away', typeLabel: string, scoreTypes: string[], scoredOnly = true) => {
+      const items = scoreEvents
+        .filter((e) => e.team === team && scoreTypes.includes(e.scoreType) && (!scoredOnly || (e.points ?? 0) > 0))
+        .sort((a, b) => (a.half ?? 1) - (b.half ?? 1) || (a.matchTime ?? 0) - (b.matchTime ?? 0));
+      if (items.length === 0) return '';
+      const lines = items.map((e) => `- ${(e.playerId && playerNames[e.playerId]) ?? '—'} ${e.half ?? 1} ${formatTime(e.matchTime)}`).join('\n');
+      return `${teamName} ${typeLabel}\n${lines}`;
+    };
+
+    const metaLine = match.competition ? match.competition.trim() : '';
+    const dateMs = match.startedAt ?? match.scheduledAt;
+    const dateStr = dateMs ? new Date(dateMs).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+    const locationDateLine = [match.venue?.trim(), dateStr].filter(Boolean).join(' | ');
+    const scoreLine = `${match.homeTeamName} ${match.homeScore} vs ${match.awayTeamName} ${match.awayScore}`;
+    const sep = '-----';
+
+    const homeTries = section(match.homeTeamName, 'home', 'Tries', ['try', 'penalty-try']);
+    const homeConversions = section(match.homeTeamName, 'home', 'Conversions', ['conversion']);
+    const homePenalties = section(match.homeTeamName, 'home', 'Penalties', ['penalty']);
+    const homeDropGoals = section(match.homeTeamName, 'home', 'Drop Goals', ['drop-goal']);
+    const awayTries = section(match.awayTeamName, 'away', 'Tries', ['try', 'penalty-try']);
+    const awayConversions = section(match.awayTeamName, 'away', 'Conversions', ['conversion']);
+    const awayPenalties = section(match.awayTeamName, 'away', 'Penalties', ['penalty']);
+    const awayDropGoals = section(match.awayTeamName, 'away', 'Drop Goals', ['drop-goal']);
+
+    const blocks: string[] = [];
+    if (metaLine) blocks.push(metaLine);
+    if (locationDateLine) blocks.push(locationDateLine);
+    blocks.push(scoreLine, sep);
+    [homeTries, homeConversions, homePenalties, homeDropGoals, awayTries, awayConversions, awayPenalties, awayDropGoals].forEach((b) => { if (b) blocks.push(b, ''); });
+    const text = blocks.join('\n').replace(/\n\n+/g, '\n\n').trim();
+
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      navigator.share({ title: `${match.homeTeamName} vs ${match.awayTeamName} - Rugby Union`, text }).catch(() => {
+        navigator.clipboard?.writeText(text);
+      });
+    } else {
+      navigator.clipboard?.writeText(text);
+    }
+  }, [match]);
+
   if (!match) return <Text size="sm" c="dimmed" fw={700}>Loading…</Text>;
+  const homeTextColor = getContrastTextColorForMatch(match.homeColor);
+  const awayTextColor = getContrastTextColorForMatch(match.awayColor);
   return (
     <Stack gap="lg">
       <Button variant="subtle" color="green" size="sm" leftSection={<span>←</span>} onClick={onBack}>Back to list</Button>
       <Card shadow="sm" padding="lg" radius="md" withBorder>
-        <Group justify="space-between" wrap="nowrap" mb="xs">
-          <Text fw={800}>{match.homeTeamName}</Text>
-          <Text fw={800} size="xl">{match.homeScore} – {match.awayScore}</Text>
-          <Text fw={800}>{match.awayTeamName}</Text>
+        <Group justify="center" wrap="nowrap" gap="xs" mb="md" style={{ alignItems: 'stretch' }}>
+          <Box
+            style={{
+              flex: 1,
+              minWidth: 0,
+              backgroundColor: match.homeColor,
+              color: homeTextColor,
+              padding: '10px 12px',
+              borderRadius: 8,
+              fontWeight: 800,
+              fontSize: '0.95rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+            }}
+          >
+            {match.homeTeamName}
+          </Box>
+          <Box style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '0 8px' }}>
+            <Text fw={800} size="xl">{match.homeScore} – {match.awayScore}</Text>
+          </Box>
+          <Box
+            style={{
+              flex: 1,
+              minWidth: 0,
+              backgroundColor: match.awayColor,
+              color: awayTextColor,
+              padding: '10px 12px',
+              borderRadius: 8,
+              fontWeight: 800,
+              fontSize: '0.95rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+            }}
+          >
+            {match.awayTeamName}
+          </Box>
         </Group>
-        <Text size="sm" c="dimmed" fw={700}>
+        <Text size="sm" c="dimmed" fw={700} mb="md">
           {match.startedAt ? new Date(match.startedAt).toLocaleString() : ''}
           {match.competition && ` · ${match.competition}`}
           {match.venue && ` · ${match.venue}`}
         </Text>
+        <Button
+          leftSection={<IconShare size={18} />}
+          variant="light"
+          fullWidth
+          onClick={shareResult}
+        >
+          Share result
+        </Button>
       </Card>
       <Card shadow="sm" padding="lg" radius="md" withBorder>
         <Text size="sm" fw={700} tt="uppercase" c="dimmed" style={sectionLabelStyle} mb="sm">Match log</Text>
         <ScrollArea style={{ maxHeight: '50vh' }}>
-          <Stack gap="xs">
           {match.log.length === 0 ? (
             <Text size="sm" c="dimmed">No events</Text>
           ) : (
-            match.log.map((ev) => (
-              <LogEventRow key={ev.id} ev={ev} />
-            ))
+            <MatchLogTable log={match.log} homeTeamName={match.homeTeamName} awayTeamName={match.awayTeamName} playerNameMap={playerNameMap} />
           )}
-          </Stack>
         </ScrollArea>
       </Card>
     </Stack>
   );
 };
-
-function LogEventRow({ ev }: { ev: LogEvent }) {
-  const timeStr = ev.matchTime != null ? `${Math.floor(ev.matchTime / 60)}'` : '';
-  if (ev.type === 'match-start') return <div className="text-zinc-500 text-sm py-1">● Match started</div>;
-  if (ev.type === 'half-time') return <div className="text-zinc-500 text-sm py-1">● Half time (H{ev.half})</div>;
-  if (ev.type === 'match-end') return <div className="text-zinc-500 text-sm py-1">● Match closed</div>;
-  if (ev.type === 'score') {
-    const label = ev.scoreType === 'try' ? 'Try' : ev.scoreType === 'conversion' ? 'Conversion' : ev.scoreType === 'penalty' ? 'Penalty' : ev.scoreType === 'drop-goal' ? 'Drop goal' : ev.scoreType === 'penalty-try' ? 'Penalty try' : ev.scoreType ?? 'Score';
-    return (
-      <div className="flex items-center gap-2 py-1 text-sm">
-        <span className="text-zinc-500 w-8 shrink-0">{timeStr}</span>
-        <span className={ev.team === 'home' ? 'text-blue-400' : 'text-red-400'}>{ev.team === 'home' ? 'H' : 'A'}</span>
-        <span className="text-white font-bold">{label}{ev.points != null ? ` +${ev.points}` : ''}</span>
-        {ev.pending && <span className="text-yellow-400 text-xs">(TMO)</span>}
-      </div>
-    );
-  }
-  if (ev.type === 'card') {
-    return (
-      <div className="flex items-center gap-2 py-1 text-sm">
-        <span className="text-zinc-500 w-8 shrink-0">{timeStr}</span>
-        <span className={ev.team === 'home' ? 'text-blue-400' : 'text-red-400'}>{ev.team === 'home' ? 'H' : 'A'}</span>
-        <span className="text-white font-bold">{ev.cardType === 'red' ? 'Red card' : 'Yellow card'}</span>
-      </div>
-    );
-  }
-  if (ev.type === 'substitution') {
-    return (
-      <div className="flex items-center gap-2 py-1 text-sm">
-        <span className="text-zinc-500 w-8 shrink-0">{timeStr}</span>
-        <span className={ev.team === 'home' ? 'text-blue-400' : 'text-red-400'}>{ev.team === 'home' ? 'H' : 'A'}</span>
-        <span className="text-white font-bold">Substitution</span>
-      </div>
-    );
-  }
-  return null;
-}
 
 const ToggleField: React.FC<{
   label: string;
@@ -2163,6 +2937,7 @@ const TeamSection: React.FC<{
   const [selectedAction, setSelectedAction] = useState<'score' | 'card' | null>(null);
   const [scoreType, setScoreType] = useState<ScoreEvent['type']>('try');
   const [cardType, setCardType] = useState<'yellow' | 'red'>('yellow');
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
 
   const teamName = useMatchStore((state) => team === 'home' ? state.homeTeam : state.awayTeam);
   const teamColor = useMatchStore((state) => team === 'home' ? state.homeColor : state.awayColor);
@@ -2172,6 +2947,7 @@ const TeamSection: React.FC<{
   const cardTracking = useMatchStore((state) => state.cardTracking);
   const substitutionsEnabled = useMatchStore((state) => state.substitutions);
   const addScore = useMatchStore((state) => state.addScore);
+  const addMissedKick = useMatchStore((state) => state.addMissedKick);
   const addCard = useMatchStore((state) => state.addCard);
   const players = useMatchStore((state) => state.players);
   const substitutionEvents = useMatchStore((state) => state.substitutionEvents);
@@ -2189,6 +2965,7 @@ const TeamSection: React.FC<{
     } else {
       setScoreType(type);
       setSelectedAction('score');
+      setSelectedPlayerId(null);
       setShowPlayerPicker(true);
     }
   };
@@ -2200,13 +2977,40 @@ const TeamSection: React.FC<{
     setShowPlayerPicker(true);
   };
 
+  const isKickWithMissOption = selectedAction === 'score' && (scoreType === 'conversion' || scoreType === 'penalty' || scoreType === 'drop-goal');
+
   const handlePlayerSubmit = (playerId: string) => {
+    if (isKickWithMissOption) {
+      setSelectedPlayerId(playerId);
+      return;
+    }
     if (selectedAction === 'score') {
       addScore(team, scoreType, playerId === UNKNOWN_PLAYER_ID ? undefined : playerId);
     } else if (selectedAction === 'card') {
       addCard(team, playerId, cardType);
     }
     setShowPlayerPicker(false);
+    setSelectedPlayerId(null);
+  };
+
+  const handleScored = () => {
+    if (!selectedPlayerId) return;
+    addScore(team, scoreType, selectedPlayerId === UNKNOWN_PLAYER_ID ? undefined : selectedPlayerId);
+    setShowPlayerPicker(false);
+    setSelectedPlayerId(null);
+  };
+
+  const handleMissed = () => {
+    if (scoreType === 'conversion' || scoreType === 'penalty' || scoreType === 'drop-goal') {
+      addMissedKick(team, scoreType, selectedPlayerId && selectedPlayerId !== UNKNOWN_PLAYER_ID ? selectedPlayerId : undefined);
+    }
+    setShowPlayerPicker(false);
+    setSelectedPlayerId(null);
+  };
+
+  const handleClosePicker = () => {
+    setShowPlayerPicker(false);
+    setSelectedPlayerId(null);
   };
 
   const pickerPlayers = selectedAction === 'score' ? onPitch : playersForCard;
@@ -2296,46 +3100,67 @@ const TeamSection: React.FC<{
             <Title order={4} mb="md" c="white" ta="center">
               {selectedAction === 'score' ? scoreType.toUpperCase() : `${cardType.toUpperCase()} CARD`}
             </Title>
+            {isKickWithMissOption && (
+              <Text size="sm" c="dimmed" ta="center" mb="xs">Select kicker, then Scored or Missed</Text>
+            )}
             <SimpleGrid cols={4} spacing="xs" mb="md">
-              {gridItems.map((player) => (
-                <button
-                  key={player.id}
-                  onClick={() => handlePlayerSubmit(player.id)}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: 8,
-                    borderRadius: 16,
-                    fontWeight: 700,
-                    fontSize: 12,
-                    minHeight: 56,
-                    color: player.id === UNKNOWN_PLAYER_ID ? '#fff' : getContrastTextColor(teamColor),
-                    border: '2px solid rgba(255,255,255,0.3)',
-                    backgroundColor: player.id === UNKNOWN_PLAYER_ID ? '#78716c' : teamColor,
-                  }}
-                >
-                  {player.id === UNKNOWN_PLAYER_ID ? (
-                    'Unknown'
-                  ) : (
-                    <>
-                      <span style={{ opacity: 0.9 }}>#{player.number}</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', textAlign: 'center', fontSize: 11 }}>{player.name}</span>
-                    </>
-                  )}
-                </button>
-              ))}
+              {gridItems.map((player) => {
+                const isSelected = selectedPlayerId === player.id;
+                return (
+                  <button
+                    key={player.id}
+                    onClick={() => handlePlayerSubmit(player.id)}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: 8,
+                      borderRadius: 16,
+                      fontWeight: 700,
+                      fontSize: 12,
+                      minHeight: 56,
+                      color: player.id === UNKNOWN_PLAYER_ID ? '#fff' : getContrastTextColor(teamColor),
+                      border: isSelected ? '3px solid #fff' : '2px solid rgba(255,255,255,0.3)',
+                      backgroundColor: player.id === UNKNOWN_PLAYER_ID ? '#78716c' : teamColor,
+                      boxShadow: isSelected ? '0 0 0 2px rgba(255,255,255,0.5)' : undefined,
+                    }}
+                  >
+                    {player.id === UNKNOWN_PLAYER_ID ? (
+                      'Unknown'
+                    ) : (
+                      <>
+                        <span style={{ opacity: 0.9 }}>#{player.number}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', textAlign: 'center', fontSize: 11 }}>{player.name}</span>
+                      </>
+                    )}
+                  </button>
+                );
+              })}
             </SimpleGrid>
             {(pickerPlayers.length === 0 && selectedAction !== 'score') && (
               <Text size="sm" c="dimmed" ta="center" mb="md">No players added. Add players in setup.</Text>
             )}
-            {(selectedAction === 'score' && onPitch.length === 0 && pickerPlayers.length === 0) && (
+            {(selectedAction === 'score' && !isKickWithMissOption && onPitch.length === 0 && pickerPlayers.length === 0) && (
               <Text size="sm" c="dimmed" ta="center" mb="md">No players on pitch. Use Unknown or add subs.</Text>
             )}
-            <Button variant="filled" color="dark" fullWidth onClick={() => setShowPlayerPicker(false)}>
-              Cancel
-            </Button>
+            {isKickWithMissOption ? (
+              <Group gap="xs" grow>
+                <Button variant="filled" color="dark" style={{ ...ACTION_BUTTON_STYLE, flex: 1 }} onClick={handleClosePicker}>
+                  Cancel
+                </Button>
+                <Button variant="light" color="red" style={{ ...ACTION_BUTTON_STYLE, flex: 1 }} onClick={handleMissed}>
+                  Missed
+                </Button>
+                <Button variant="filled" color="green" style={{ ...ACTION_BUTTON_STYLE, flex: 1 }} onClick={handleScored} disabled={!selectedPlayerId}>
+                  Scored
+                </Button>
+              </Group>
+            ) : (
+              <Button variant="filled" color="dark" fullWidth onClick={handleClosePicker} style={{ ...ACTION_BUTTON_STYLE }}>
+                Cancel
+              </Button>
+            )}
           </Box>
         </Box>
       )}
@@ -2398,6 +3223,8 @@ const UndoAndLogPanel: React.FC = () => {
     if ('offPlayerId' in ev) return 'Substitution';
     if ('points' in ev) {
       const s = ev as ScoreEvent;
+      if ((s.points ?? 0) === 0 && (s.type === 'conversion' || s.type === 'penalty' || s.type === 'drop-goal'))
+        return `${s.type === 'conversion' ? 'Conversion' : s.type === 'penalty' ? 'Penalty' : 'Drop goal'} missed`;
       return `${s.type.toUpperCase()}${s.pending ? ' (TMO)' : ''} +${s.points ?? 0}`;
     }
     const c = ev as Card;

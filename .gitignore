@@ -11,6 +11,14 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+
+# Backup / scratch (do not deploy)
+*.tsx.0
+*.tsx.1
+*.tsx.default
+*-complete.jsx
 
 # Editor directories and files
 .vscode/*
