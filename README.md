@@ -8,6 +8,23 @@ Offline-first web app for scoring rugby matches: team setup, live scoring, cards
 
 **Production /admin:** The build outputs `404.html` (copy of `index.html`) so that GitHub Pages serves the app for `/admin` and other client routes. Netlify uses `public/_redirects`; Vercel uses `vercel.json` rewrites. Redeploy after pulling these changes so `/admin` works in production.
 
+### Deploy via Git
+
+1. **Check the build**
+   ```bash
+   npm run build
+   ```
+
+2. **Commit and push**
+   ```bash
+   git add .
+   git status
+   git commit -m "Your message"
+   git push origin main
+   ```
+
+3. **Hosting** – If the repo is connected to Vercel, Netlify, or GitHub Pages, a new deploy usually runs automatically on push to `main`. Set `VITE_ADMIN_PASSWORD` in the host’s environment variables for production.
+
 ---
 
 # React + TypeScript + Vite

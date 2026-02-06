@@ -873,17 +873,13 @@ const SelectTeamWizard: React.FC<{
   const [selectedRosterIdForWizard, setSelectedRosterIdForWizard] = useState<string>('');
   const [subsCount, setSubsCount] = useState(defaultSubsCount);
   const [slots, setSlots] = useState<LineupSlot[]>(() => {
-    if (currentLineup && currentLineup.length >= 15) {
-      const subSlots = currentLineup.filter((s) => s.number > 15);
-      return currentLineup;
-    }
+    if (currentLineup && currentLineup.length >= 15) return currentLineup;
     return [];
   });
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
   const [saveAsRosterName, setSaveAsRosterName] = useState('');
   const [showSaveAsRoster, setShowSaveAsRoster] = useState(false);
 
-  const totalSlots = 15 + subsCount;
   const getSlot = (num: number) => slots.find((s) => s.number === num);
   const setSlot = (num: number, slot: LineupSlot) => {
     setSlots((prev) => {
@@ -1058,13 +1054,6 @@ const SelectTeamWizard: React.FC<{
   );
 
   // Step 2: Pitch grid
-  const slotNumbers = (() => {
-    const out: number[] = [];
-    PITCH_ROWS.forEach((row) => row.forEach((n) => out.push(n)));
-    for (let n = 16; n <= 15 + subsCount; n++) out.push(n);
-    return out;
-  })();
-
   const gridStep = (
     <Box>
       <Group justify="space-between" mb="sm">
@@ -1215,7 +1204,7 @@ const SlotEditorModal: React.FC<{
   allSlots: LineupSlot[];
   onAssign: (primary: LineupSlot, secondary?: LineupSlot) => void;
   onClose: () => void;
-}> = ({ slotNumber, slot, teamId, teamColor, teamPlayers, allSlots, onAssign, onClose }) => {
+}> = ({ slotNumber, slot, teamId, teamPlayers, allSlots, onAssign, onClose }) => {
   const [mode, setMode] = useState<'select' | 'add'>('select');
   const [newPlayerForm, setNewPlayerForm] = useState({ name: '', number: String(slotNumber), position: DEFAULT_PLAYER_POSITIONS[slotNumber - 1] ?? 'Sub' });
 
@@ -1323,7 +1312,7 @@ const SlotEditorModal: React.FC<{
 };
 
 // Game Setup Screen
-const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => void }> = ({ onNavigate }) => {
+const GameSetup: React.FC<{ onBack: () => void; onNavigate: (view: AppView) => void }> = ({ onBack: _onBack, onNavigate: _onNavigate }) => {
   const config = useMatchStore();
   const updateConfig = useMatchStore((state) => state.updateConfig);
   const startMatch = useMatchStore((state) => state.startMatch);
